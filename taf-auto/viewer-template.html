@@ -34,6 +34,7 @@ select{font:inherit;font-size:15px;padding:10px 12px;border:1px solid var(--line
 .tag{font-size:13px;font-weight:700;padding:3px 10px;border-radius:999px;background:#EEF1ED;color:#3E4C3F}
 .tag.preg{background:var(--green-soft);color:var(--green)}
 .tag.warn{background:var(--amber-soft);color:var(--amber)}
+.tag.new{background:#E3EDFB;color:#1F4E8C}
 .tag.bad{background:var(--red-soft);color:var(--red)}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:8px 18px}
 .f{display:flex;flex-direction:column;border-left:3px solid var(--line);padding-left:10px}
@@ -45,6 +46,15 @@ summary{cursor:pointer;color:var(--green);font-size:13px;font-weight:700}
 table{border-collapse:collapse;margin-top:8px;font-size:13px}
 td{border-bottom:1px solid var(--line);padding:3px 12px 3px 0;vertical-align:top}
 td:first-child{color:var(--muted);white-space:nowrap}
+.cands{display:grid;gap:10px}
+.cand{display:grid;grid-template-columns:minmax(150px,auto) auto 1fr;align-items:center;gap:6px 18px;text-align:left;font:inherit;color:inherit;background:var(--card);border:2px solid var(--line);border-radius:14px;padding:14px 18px;cursor:pointer}
+.cand:hover,.cand:focus{border-color:var(--green);outline:none;box-shadow:0 0 0 4px rgba(30,91,64,.12)}
+.cand-farm{font-size:20px;font-weight:800;color:var(--green)}
+.cand-ear{font-size:22px;font-weight:800;font-variant-numeric:tabular-nums}
+.cand-ear .dim{font-size:16px}
+.cand-sub{font-size:14px;color:var(--muted);font-weight:700}
+.cand .tags{grid-column:1/-1;margin:0}
+.back{font:inherit;font-size:15px;font-weight:800;color:var(--green);background:var(--green-soft);border:none;border-radius:10px;padding:8px 14px;cursor:pointer}
 .empty{background:var(--card);border:1px dashed #C0D0C0;border-radius:16px;padding:30px;text-align:center;color:var(--muted);font-size:15px}
 .farms{margin-top:28px;font-size:13px;color:var(--muted)}
 .farms summary{font-size:13px}
@@ -101,6 +111,9 @@ function field(label,val,sub){
 
 function tags(c){
   var t=[];
+  // 前回（先週）取ったCSVと比べた変化
+  if(c._new) t.push(['new','今回新しく入った牛']);
+  if(c._calv!=null) t.push(['new','分娩日が更新（前回 '+(c._calv||'なし')+'）']);
   var sex=v(c,'性別'), breed=v(c,'品種'), parity=v(c,'産次');
   if(breed) t.push(['',breed+(sex?' '+sex:'')]);
   t.push(['', parity? parity+'産' : '未経産']);
@@ -149,10 +162,40 @@ function cowHTML(c){
 
 var MAX=50; // 一度に出すのは50頭まで（それ以上は絞ってもらう）
 
+// 候補の一覧（4桁が同じ牛が何戸かにいるとき）。農家名を大きく出して選んでもらう。
+function candHTML(c,i){
+  var f=DATA.farms[c._f]||{};
+  var age=months(v(c,'生年月日'));
+  return '<button class="cand" data-i="'+i+'">'
+    +'<span class="cand-farm">'+esc(f.name||f.code||'')+'</span>'
+    +'<span class="cand-ear">'+earHTML(c['耳標ID'])+'</span>'
+    +'<span class="cand-sub">'+esc(v(c,'名号')||'（名号なし）')+'　'+esc(v(c,'品種'))+'　'+esc(v(c,'生年月日'))+(age!==''?'（'+age+'か月）':'')+'</span>'
+    +'<span class="tags">'+tags(c)+'</span>'
+    +'</button>';
+}
+
+var HITS=[];
+function showCow(i){
+  $('count').innerHTML = HITS.length>1? '<button class="back" id="back">← 候補に戻る（'+HITS.length+'頭）</button>' : '';
+  $('list').innerHTML = cowHTML(HITS[i]);
+  var b=$('back'); if(b) b.onclick=function(){ render(); };
+}
+
+function render(){
+  var q=$('q').value.normalize('NFKC').trim(), farm=$('farmSel').value;
+  if(HITS.length===1){ showCow(0); return; }
+  $('count').textContent = HITS.length? HITS.length+' 頭あります。農家を選んでください'+(HITS.length>MAX?'（はじめの'+MAX+'頭を表示）':'') : '';
+  $('list').innerHTML = HITS.length
+    ? '<div class="cands">'+HITS.slice(0,MAX).map(candHTML).join('')+'</div>'
+    : (q? '<div class="empty">「'+esc(q)+'」の牛は見つかりません'+(farm!==''?'（農家を「全農家」に戻すと見つかるかもしれません）':'')+'</div>'
+        : '<div class="empty">耳標の4桁を入れてください</div>');
+}
+
 function search(){
   var q=$('q').value.normalize('NFKC').trim(), farm=$('farmSel').value;
   var d=digits(q), hits=[];
-  if(!q){ $('count').textContent=''; $('list').innerHTML='<div class="empty">耳標の4桁を入れてください</div>'; return; }
+  HITS=[];
+  if(!q){ render(); return; }
   DATA.cows.forEach(function(c){
     if(farm!=='' && String(c._f)!==farm) return;
     var id=digits(c['耳標ID']);
@@ -166,10 +209,10 @@ function search(){
     }
     if(ok) hits.push(c);
   });
-  $('count').textContent = hits.length? hits.length+' 頭見つかりました'+(hits.length>MAX?'（はじめの'+MAX+'頭を表示）':'') : '';
-  $('list').innerHTML = hits.length
-    ? hits.slice(0,MAX).map(cowHTML).join('')
-    : '<div class="empty">「'+esc(q)+'」の牛は見つかりません'+(farm!==''?'（農家を「全農家」に戻すと見つかるかもしれません）':'')+'</div>';
+  // 候補は農家名の順に並べる
+  hits.sort(function(a,b){ return ((DATA.farms[a._f]||{}).name||'').localeCompare((DATA.farms[b._f]||{}).name||'','ja'); });
+  HITS=hits;
+  render();
 }
 
 function init(){
@@ -190,6 +233,9 @@ function init(){
     +'</table>';
 
   $('q').addEventListener('input',search);
+  $('list').addEventListener('click',function(e){ var b=e.target.closest('.cand'); if(b) showCow(+b.dataset.i); });
+  // 候補が出ているときに Enter を押すと、いちばん上の候補を開く
+  $('q').addEventListener('keydown',function(e){ if(e.key==='Enter' && HITS.length>1 && document.querySelector('.cand')) showCow(0); });
   sel.addEventListener('change',function(){ search(); $('q').focus(); });
   // Esc で消して、次の牛をすぐ打てるように
   document.addEventListener('keydown',function(e){ if(e.key==='Escape'){ $('q').value=''; search(); $('q').focus(); } });

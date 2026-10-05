@@ -45,6 +45,23 @@ function kana(s) {
   return String(s || '').normalize('NFKC').replace(/([ァ-ヶー])-/g, '$1ー').replace(/([ァ-ヶー])-/g, '$1ー').trim();
 }
 
+// 前回取ったCSV（牛一覧_日付.csv のうち、最新の1つ前）を読む。初回は無い。
+function previousOf(dir) {
+  const dated = fs.readdirSync(dir).filter((n) => /^牛一覧_\d{8}\.csv$/.test(n)).sort();
+  if (dated.length < 2) return null;
+  const name = dated[dated.length - 2];
+  const rows = readCsv(path.join(dir, name));
+  const h = rows[0].map((s) => s.trim());
+  const byId = new Map();
+  for (const r of rows.slice(1)) {
+    const o = {};
+    h.forEach((k, i) => { o[k] = kana(r[i]); });
+    byId.set(o['耳標ID'], o);
+  }
+  const m = name.match(/(\d{4})(\d{2})(\d{2})/);
+  return { byId, date: `${m[1]}-${m[2]}-${m[3]}` };
+}
+
 // フォルダ名「00001234_十勝 太郎」から農家の名前とコードを取り出す
 function farmOf(dirName) {
   const m = dirName.match(/^(\d+)_?(.*)$/);
@@ -64,11 +81,18 @@ export function buildViewer(outRoot) {
     if (rows.length < 1) continue;
     const h = rows[0].map((s) => s.trim());
     if (!header || h.length > header.length) header = h;
-    const farm = { ...farmOf(d.name), date: fs.statSync(f).mtime.toISOString().slice(0, 10), n: rows.length - 1 };
+    const prev = previousOf(path.join(outRoot, d.name));
+    const farm = { ...farmOf(d.name), date: fs.statSync(f).mtime.toISOString().slice(0, 10), n: rows.length - 1, prev: prev ? prev.date : '' };
     const fi = farms.push(farm) - 1;
     for (const r of rows.slice(1)) {
       const o = { _f: fi };
       h.forEach((k, i) => { o[k] = kana(r[i]); });
+      // 前回と比べる：新しく入った牛（生まれた子牛・導入牛）と、分娩日が変わった牛
+      if (prev) {
+        const before = prev.byId.get(o['耳標ID']);
+        if (!before) o._new = 1;
+        else if ((before['最新分娩日'] || '') !== (o['最新分娩日'] || '')) o._calv = before['最新分娩日'] || '';
+      }
       cows.push(o);
     }
   }

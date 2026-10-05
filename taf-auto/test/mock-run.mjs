@@ -151,6 +151,11 @@ Object.assign(process.env, {
 });
 if (fs.existsSync('/opt/pw-browsers/chromium')) process.env.TAF_BROWSER_PATH ||= '/opt/pw-browsers/chromium';
 
+// 先週の分が残っている状態にしておく（子牛1頭が増え、1頭の分娩日が変わった想定）
+const farmADir = path.join(OUT, 'save', `${FARMS[0].code}_${FARMS[0].name.replace(/\s+/g, ' ')}`);
+fs.mkdirSync(farmADir, { recursive: true });
+fs.copyFileSync(path.join(HERE, 'fixtures', 'farmA_prev.csv'), path.join(farmADir, '牛一覧_20000101.csv'));
+
 const { run } = await import('../taf-download.mjs');
 const failed = await run();
 
@@ -169,21 +174,30 @@ const browser = await chromium.launch(process.env.TAF_BROWSER_PATH ? { executabl
 const p = await browser.newPage();
 await p.goto('file://' + path.join(save, '牛検索.html'));
 await p.fill('#q', '1111');
-r['4桁で1頭出る'] = (await p.locator('.cow').count()) === 1;
+r['4桁で1頭ならすぐ牛の情報が出る'] = (await p.locator('.cow').count()) === 1;
 r['名号が全角カナで出る'] = (await p.locator('.cow .name').first().innerText()) === 'テスト ウシ ニ';
 r['妊鑑マイナスの印が出る'] = (await p.locator('.cow .tag', { hasText: '妊鑑マイナス' }).count()) === 1;
 r['体細胞の多い牛に印が出る'] = (await p.locator('.cow .tag.bad').count()) === 1;
 await p.fill('#q', '0722');
-r['同じ4桁は両方の農家から出る'] = (await p.locator('.cow').count()) === 2;
+r['同じ4桁は農家の候補が2つ出る'] = (await p.locator('.cand').count()) === 2 && (await p.locator('.cow').count()) === 0;
+r['候補に農家名が出る'] = (await p.locator('.cand-farm').allInnerTexts()).join('|') === '試験 一郎|試験 二郎';
+await p.screenshot({ path: path.join(OUT, 'viewer-cands.png'), fullPage: true });
+await p.locator('.cand').first().click();
+r['候補を選ぶとその牛の情報が出る'] = (await p.locator('.cow .farm').innerText()) === '試験 一郎';
+r['分娩日が更新された印が出る'] = (await p.locator('.cow .tag.new', { hasText: '分娩日が更新（前回 2024/08/01）' }).count()) === 1;
+await p.screenshot({ path: path.join(OUT, 'viewer-cow.png'), fullPage: true });
+await p.click('#back');
+r['候補に戻れる'] = (await p.locator('.cand').count()) === 2;
+await p.fill('#q', '2222');
+r['新しく入った子牛に印が出る'] = (await p.locator('.cow .tag.new', { hasText: '今回新しく入った牛' }).count()) === 1;
+await p.fill('#q', '1111');
+r['変わっていない牛には印が出ない'] = (await p.locator('.cow .tag.new').count()) === 0;
 await p.fill('#q', '07226');
 r['5桁（最後の1桁つき）で絞れる'] = (await p.locator('.cow').count()) === 1;
 await p.fill('#q', 'ベツノ');
 r['名号の一部でも探せる'] = (await p.locator('.cow').count()) === 1;
 await p.fill('#q', '9999');
 r['ない番号は「見つかりません」'] = (await p.locator('.empty').innerText()).includes('見つかりません');
-await p.screenshot({ path: path.join(OUT, 'viewer.png'), fullPage: true });
-await p.fill('#q', '0722');
-await p.screenshot({ path: path.join(OUT, 'viewer-0722.png'), fullPage: true });
 await browser.close();
 server.close();
 

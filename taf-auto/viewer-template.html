@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>牛検索（TAF）</title>
+<style>
+:root{
+ --bg:#EFF3EE; --card:#FFFFFF; --ink:#1C2B23; --muted:#61705F; --line:#DCE3DA;
+ --green:#1E5B40; --green-soft:#E4EEE4; --amber:#B86E12; --amber-soft:#FCF1E2; --red:#B3372F; --red-soft:#FBEAEA;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--ink);font-family:"BIZ UDPGothic","Yu Gothic UI","Hiragino Sans","Noto Sans JP",sans-serif;line-height:1.5}
+header{background:var(--green);color:#fff;padding:14px 20px;display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+header h1{font-size:20px;font-weight:800;letter-spacing:.04em}
+header .fresh{font-size:13px;opacity:.9}
+header .fresh.old{background:var(--amber-soft);color:var(--amber);padding:3px 10px;border-radius:999px;font-weight:700;opacity:1}
+main{max-width:1100px;margin:0 auto;padding:18px 20px 40px}
+.search{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
+#q{font-size:40px;font-weight:800;letter-spacing:.2em;width:260px;padding:8px 16px;border:3px solid var(--green);border-radius:14px;background:#fff;font-variant-numeric:tabular-nums}
+#q:focus{outline:none;box-shadow:0 0 0 4px rgba(30,91,64,.2)}
+select{font:inherit;font-size:15px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:#fff}
+.hint{color:var(--muted);font-size:13px}
+.count{color:var(--muted);font-size:14px;margin:4px 0 10px}
+.list{display:grid;gap:12px}
+.cow{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px 18px;box-shadow:0 1px 2px rgba(21,44,32,.06)}
+.cow-head{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;border-bottom:1px solid var(--line);padding-bottom:10px;margin-bottom:12px}
+.ear{font-size:28px;font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:.04em}
+.ear .dim{color:#A3B0A2;font-size:20px}
+.ear .key{background:#FFF3B8;border-radius:6px;padding:0 4px}
+.name{font-size:17px;font-weight:700}
+.farm{margin-left:auto;background:var(--green-soft);color:var(--green);font-weight:800;padding:4px 12px;border-radius:999px;font-size:14px}
+.tags{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+.tag{font-size:13px;font-weight:700;padding:3px 10px;border-radius:999px;background:#EEF1ED;color:#3E4C3F}
+.tag.preg{background:var(--green-soft);color:var(--green)}
+.tag.warn{background:var(--amber-soft);color:var(--amber)}
+.tag.bad{background:var(--red-soft);color:var(--red)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:8px 18px}
+.f{display:flex;flex-direction:column;border-left:3px solid var(--line);padding-left:10px}
+.f .k{font-size:12px;color:var(--muted);font-weight:700}
+.f .v{font-size:16px;font-weight:700;font-variant-numeric:tabular-nums;word-break:break-all}
+.f .v small{font-size:12px;color:var(--muted);font-weight:700;margin-left:4px}
+details{margin-top:12px}
+summary{cursor:pointer;color:var(--green);font-size:13px;font-weight:700}
+table{border-collapse:collapse;margin-top:8px;font-size:13px}
+td{border-bottom:1px solid var(--line);padding:3px 12px 3px 0;vertical-align:top}
+td:first-child{color:var(--muted);white-space:nowrap}
+.empty{background:var(--card);border:1px dashed #C0D0C0;border-radius:16px;padding:30px;text-align:center;color:var(--muted);font-size:15px}
+.farms{margin-top:28px;font-size:13px;color:var(--muted)}
+.farms summary{font-size:13px}
+.farms table td{padding-right:18px}
+</style>
+</head>
+<body>
+<header>
+  <h1>牛検索（TAF 在籍牛一覧）</h1>
+  <span class="fresh" id="fresh"></span>
+</header>
+<main>
+  <div class="search">
+    <input id="q" inputmode="numeric" autocomplete="off" placeholder="0000" autofocus aria-label="耳標の4桁">
+    <select id="farmSel" aria-label="農家で絞る"><option value="">全農家</option></select>
+    <span class="hint">耳標の4桁（例：0722）を入れるとすぐ出ます。<br>10桁ぜんぶ・名号の一部でも探せます。</span>
+  </div>
+  <div class="count" id="count"></div>
+  <div class="list" id="list"></div>
+  <details class="farms" id="farms"></details>
+</main>
+<script>
+// 取り込んだデータ（build-viewer.mjs が作るときに入れる）
+var DATA = /*__DATA__*/null;
+
+function $(id){ return document.getElementById(id); }
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
+function digits(s){ return String(s||'').replace(/\D/g,''); }
+
+// 画面に出ている牛番号（例「0722 6」）は、耳標ID10桁の6〜9桁目と最後の1桁
+function key4(id){ id=digits(id); return id.length===10? id.slice(5,9) : ''; }
+
+function earHTML(id){
+  id=digits(id);
+  if(id.length!==10) return esc(id||'（耳標なし）');
+  return '<span class="dim">'+id.slice(0,5)+'</span> <span class="key">'+id.slice(5,9)+'</span> <span class="dim">'+id.slice(9)+'</span>';
+}
+
+function parseDate(s){ var m=String(s||'').match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})/); return m? new Date(+m[1],+m[2]-1,+m[3]) : null; }
+function months(s){
+  var d=parseDate(s); if(!d) return '';
+  var n=new Date(), m=(n.getFullYear()-d.getFullYear())*12+(n.getMonth()-d.getMonth());
+  if(n.getDate()<d.getDate()) m--;
+  return m;
+}
+function daysUntil(s){ var d=parseDate(s); if(!d) return null; var n=new Date(); n.setHours(0,0,0,0); return Math.round((d-n)/86400000); }
+
+function v(c,k){ var x=c[k]; return (x==null||x===''||x==='-')? '' : x; }
+
+function field(label,val,sub){
+  if(val===''||val==null) val='—';
+  return '<div class="f"><span class="k">'+esc(label)+'</span><span class="v">'+esc(val)+(sub?'<small>'+esc(sub)+'</small>':'')+'</span></div>';
+}
+
+function tags(c){
+  var t=[];
+  var sex=v(c,'性別'), breed=v(c,'品種'), parity=v(c,'産次');
+  if(breed) t.push(['',breed+(sex?' '+sex:'')]);
+  t.push(['', parity? parity+'産' : '未経産']);
+  var preg=String(c['妊鑑結果']||''); // 「-」は空と同じ扱いにしない（妊鑑マイナスの印なので）
+  if(preg==='+'||preg==='＋') t.push(['preg','妊娠']);
+  else if(preg==='-'||preg==='－') t.push(['warn','妊鑑マイナス']);
+  else if(v(c,'最新授精日')) t.push(['','授精中']);
+  var due=daysUntil(v(c,'分娩予定日'));
+  if(due!=null && due>=0 && due<=30) t.push(['warn','分娩まで'+due+'日']);
+  var scc=parseFloat(v(c,'体細胞数'));
+  if(scc>=300) t.push(['bad','体細胞 '+scc]);
+  return t.map(function(x){ return '<span class="tag '+x[0]+'">'+esc(x[1])+'</span>'; }).join('');
+}
+
+function cowHTML(c){
+  var f=DATA.farms[c._f]||{};
+  var age=months(v(c,'生年月日'));
+  var html='<div class="cow">'
+    +'<div class="cow-head"><span class="ear">'+earHTML(c['耳標ID'])+'</span>'
+    +'<span class="name">'+esc(v(c,'名号')||'（名号なし）')+'</span>'
+    +'<span class="farm">'+esc(f.name||f.code||'')+'</span></div>'
+    +'<div class="tags">'+tags(c)+'</div>'
+    +'<div class="grid">'
+    +field('生年月日',v(c,'生年月日'),age!==''? age+'か月' : '')
+    +field('最新分娩日',v(c,'最新分娩日'),v(c,'分娩後日数')&&v(c,'最新分娩日')? '分娩後'+v(c,'分娩後日数')+'日' : '')
+    +field('最新授精日',v(c,'最新授精日'),v(c,'授精後日数')? '授精後'+v(c,'授精後日数')+'日' : '')
+    +field('授精回数',v(c,'授精回数'),v(c,'授精略号'))
+    +field('妊鑑日',v(c,'妊鑑日'),v(c,'妊鑑結果'))
+    +field('分娩予定日',v(c,'分娩予定日'))
+    +field('空胎日数',v(c,'空胎日数'))
+    +field('初回授精月齢',v(c,'初回授精月齢'))
+    +field('検定乳量',v(c,'検定乳量'),v(c,'検定乳量')?'kg':'')
+    +field('体細胞数',v(c,'体細胞数'),v(c,'体細胞数')?'千/mL':'')
+    +field('父牛',v(c,'父牛名'))
+    +field('母の父',v(c,'母の父の名号'))
+    +field('母の母の父',v(c,'母の母の父の名号'))
+    +field('登録番号',v(c,'登録番号'))
+    +field('BVD',v(c,'BVD'))
+    +'</div>'
+    +'<details><summary>CSVの全項目</summary><table>'
+    +DATA.header.map(function(k){ return '<tr><td>'+esc(k)+'</td><td>'+esc(c[k])+'</td></tr>'; }).join('')
+    +'</table></details>'
+    +'</div>';
+  return html;
+}
+
+var MAX=50; // 一度に出すのは50頭まで（それ以上は絞ってもらう）
+
+function search(){
+  var q=$('q').value.normalize('NFKC').trim(), farm=$('farmSel').value;
+  var d=digits(q), hits=[];
+  if(!q){ $('count').textContent=''; $('list').innerHTML='<div class="empty">耳標の4桁を入れてください</div>'; return; }
+  DATA.cows.forEach(function(c){
+    if(farm!=='' && String(c._f)!==farm) return;
+    var id=digits(c['耳標ID']);
+    var ok;
+    if(d && d===q){
+      if(d.length===4) ok = key4(id)===d;                 // 牛番号の4桁
+      else if(d.length===5) ok = id.slice(5)===d;         // 4桁＋最後の1桁
+      else ok = id.indexOf(d)>=0;                          // 10桁や、その一部
+    }else{
+      ok = String(c['名号']||'').indexOf(q)>=0 || String(c['登録番号']||'').indexOf(q)>=0;
+    }
+    if(ok) hits.push(c);
+  });
+  $('count').textContent = hits.length? hits.length+' 頭見つかりました'+(hits.length>MAX?'（はじめの'+MAX+'頭を表示）':'') : '';
+  $('list').innerHTML = hits.length
+    ? hits.slice(0,MAX).map(cowHTML).join('')
+    : '<div class="empty">「'+esc(q)+'」の牛は見つかりません'+(farm!==''?'（農家を「全農家」に戻すと見つかるかもしれません）':'')+'</div>';
+}
+
+function init(){
+  if(!DATA){ $('list').innerHTML='<div class="empty">データが入っていません。build-viewer.mjs で作り直してください。</div>'; return; }
+  var built=new Date(DATA.built);
+  var oldest=DATA.farms.reduce(function(a,f){ return !a||f.date<a? f.date : a; },'');
+  var age=Math.floor((Date.now()-new Date(oldest).getTime())/86400000);
+  $('fresh').textContent='データ：'+oldest.replace(/-/g,'/')+' 取得'+(age>10?'（'+age+'日前・古くなっています）':'')+'　'+DATA.farms.length+'戸・'+DATA.cows.length+'頭';
+  if(age>10) $('fresh').className='fresh old';
+
+  var sel=$('farmSel');
+  DATA.farms.map(function(f,i){ return [f,i]; })
+    .sort(function(a,b){ return (a[0].name||'').localeCompare(b[0].name||'','ja'); })
+    .forEach(function(p){ var o=document.createElement('option'); o.value=p[1]; o.textContent=(p[0].name||p[0].code)+'（'+p[0].n+'頭）'; sel.appendChild(o); });
+
+  $('farms').innerHTML='<summary>取り込んだ農家と取得日</summary><table>'
+    +DATA.farms.map(function(f){ return '<tr><td>'+esc(f.code)+'</td><td>'+esc(f.name)+'</td><td>'+esc(f.n)+'頭</td><td>'+esc(f.date)+'</td></tr>'; }).join('')
+    +'</table>';
+
+  $('q').addEventListener('input',search);
+  sel.addEventListener('change',function(){ search(); $('q').focus(); });
+  // Esc で消して、次の牛をすぐ打てるように
+  document.addEventListener('keydown',function(e){ if(e.key==='Escape'){ $('q').value=''; search(); $('q').focus(); } });
+  search();
+}
+init();
+</script>
+</body>
+</html>

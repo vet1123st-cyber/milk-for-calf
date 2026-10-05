@@ -1,0 +1,13 @@
+{
+  "name": "taf-auto",
+  "private": true,
+  "type": "module",
+  "description": "TAF（十勝酪農畜産物生産履歴システム）から牛一覧CSVを毎朝自動で取ってくる",
+  "scripts": {
+    "start": "node taf-download.mjs",
+    "test": "node test/mock-run.mjs"
+  },
+  "dependencies": {
+    "playwright": "1.56.1"
+  }
+}

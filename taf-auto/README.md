@@ -56,7 +56,7 @@ C:\LIGvets\TAF牛一覧\            ← config.json の「保存先フォルダ�
 
 ## 手直しする人向け
 
-- `taf-download.mjs`：取得の本体（Playwright で Edge を動かす）。ボタンは**画面に書いてある文字**で探すので、
+- `taf-download.mjs`：取得の本体（Playwright で Edge を動かす）。ポータル → 酪畜履歴（新しいタブ）→ 農家の丸（`radioSelect`）→ 「変更」（`#BTNCHANGE`）→ 牛一覧（`DNL00`）→ 絞り込みを全部オン → 「表示中リストCSV出力」（`a.csv-output`、POST で届く）の順。牛一覧の絞り込みは前回の状態が残るので、毎回ぜんぶ入れ直している。ボタンは**画面に書いてある文字**で探すので、
   見た目が変わっても文字が同じなら動きます
 - `build-viewer.mjs`：CSV（Shift_JIS）を読んで牛検索.html を作る。単独でも `node build-viewer.mjs "保存先"` で作り直せます
 - `viewer-template.html`：牛検索の画面のひな形

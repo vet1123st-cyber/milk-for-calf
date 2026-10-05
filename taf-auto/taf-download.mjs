@@ -135,82 +135,122 @@ async function signIn(page, cred) {
 }
 
 // 酪畜履歴の「農家を選ぶ画面」までたどり着く
+// 酪畜履歴はポータルの「酪畜履歴」（Redirector.aspx）から新しいタブで開く作り。
+// ポータルを通るとサインインが引き継がれるので、直接 DZL99 は開かずに必ずポータルから入る。
 async function openRakuchiku(context, page, cred) {
-  // まず酪畜履歴へ直接行く。サインインがまだならサインイン画面に飛ばされるので、そこで入れる。
-  await page.goto(RAKUCHIKU + 'DZL99', { waitUntil: 'domcontentloaded' });
+  await page.goto(PORTAL, { waitUntil: 'domcontentloaded' });
   if (await isLoginForm(page)) {
     log('サインインします');
     await signIn(page, cred);
+    if (!page.url().startsWith(PORTAL)) await page.goto(PORTAL, { waitUntil: 'domcontentloaded' });
   }
-  if (page.url().startsWith(RAKUCHIKU)) return page;
-
-  // 直接行けなかったときは、ポータルの「酪畜履歴」から入る（別の窓で開くこともある）
-  log('ポータルから酪畜履歴に入ります');
-  await page.goto(PORTAL, { waitUntil: 'domcontentloaded' });
-  if (await isLoginForm(page)) await signIn(page, cred);
-  const popup = context.waitForEvent('page', { timeout: 8000 }).catch(() => null);
-  await clickByText(page, ['酪畜履歴', '畜産履歴']);
+  const link = page.locator('a[href*="Redirector.aspx"][href*="rakuchiku"]').first();
+  const popup = context.waitForEvent('page', { timeout: WAIT }).catch(() => null);
+  if (await link.count()) await link.click();
+  else await clickByText(page, ['酪畜履歴', '畜産履歴']);
   const p2 = (await popup) || page;
-  await p2.waitForLoadState('domcontentloaded');
+  await p2.waitForURL(/DZL99|DLL60|SeisanPC/i, { timeout: WAIT }).catch(() => {});
   if (await isLoginForm(p2)) await signIn(p2, cred);
+  await p2.waitForLoadState('domcontentloaded');
+  if (!p2.url().startsWith(RAKUCHIKU)) throw new Error(`酪畜履歴が開けませんでした（開いた画面: ${p2.url()}）`);
   return p2;
+}
+
+// 「ユーザー切替」と同じ。農家を選ぶ画面（DZL99）に戻る。
+async function backToFarmSelect(page) {
+  if (/DZL99/i.test(page.url())) return;
+  await page.goto(RAKUCHIKU + 'DZL99', { waitUntil: 'domcontentloaded' });
 }
 
 // ---------- 農家を選ぶ ----------
 
-// 農家を選ぶ画面に出ている農家を、ぜんぶ読み取る（名前と生産者コード）
+// 農家を選ぶ画面に出ている農家を、ぜんぶ読み取る。
+// 丸（input name=radioSelect）の value が生産者コードになっている。
 async function listFarms(page) {
-  if (!/DZL99/i.test(page.url())) await page.goto(RAKUCHIKU + 'DZL99', { waitUntil: 'domcontentloaded' });
-  await page.locator('tr', { hasText: /\d{8}/ }).first().waitFor({ timeout: WAIT });
-  const farms = await page.locator('tr').evaluateAll((trs) => trs.map((tr) => {
-    const cells = [...tr.querySelectorAll('td')].map((td) => td.innerText.trim());
-    const code = cells.find((t) => /^\d{8}$/.test(t));
-    if (!code) return null;
-    const name = cells.find((t) => t && t !== code) || '';
+  await backToFarmSelect(page);
+  await page.locator('input[name=radioSelect]').first().waitFor({ state: 'attached', timeout: WAIT });
+  const farms = await page.locator('input[name=radioSelect]').evaluateAll((els) => els.map((el) => {
+    const code = (el.value || '').trim();
+    const tr = el.closest('tr');
+    const cells = tr ? [...tr.querySelectorAll('td')].map((td) => td.innerText.trim()) : [];
+    const name = cells.find((t) => t && t !== code && !/^\d{8}$/.test(t)) || '';
     return { '生産者コード': code, '名前': name.replace(/\s+/g, ' ') };
-  }).filter(Boolean));
+  }).filter((f) => /^\d+$/.test(f['生産者コード'])));
   if (!farms.length) throw new Error('農家を選ぶ画面に農家が1戸も見つかりません');
   return farms;
 }
 
 async function chooseFarm(page, farm) {
   const code = farm['生産者コード'];
-  if (!/DZL99/i.test(page.url())) {
-    // 別の農家を見ていたら、「ユーザー切替」で選ぶ画面に戻る
-    await page.goto(RAKUCHIKU + 'DZL99', { waitUntil: 'domcontentloaded' });
+  await backToFarmSelect(page);
+  let radio = page.locator(`input[name=radioSelect][value="${code}"]`);
+  if (!(await radio.count())) {
+    // 一覧に見当たらないときは、生産者コードで絞って探し直す
+    await page.locator('input[name=SEISANCODE]').fill(code);
+    await page.locator('a.jsSearchUser').click();
+    await radio.first().waitFor({ state: 'attached', timeout: WAIT }).catch(() => {
+      throw new Error(`生産者コード ${code} の農家が一覧にありません（${farm['名前'] || ''}）`);
+    });
   }
-  // 生産者コードで絞ってから、その行の丸を押す
-  const codeBox = page.locator('xpath=//*[contains(normalize-space(.),"生産者コード")]/following::input[@type="text" or not(@type)][1]').first();
-  if (await codeBox.isVisible().catch(() => false)) {
-    await codeBox.fill(code);
-    await clickByText(page, ['この条件で表示']);
-    await page.waitForLoadState('domcontentloaded');
-  }
-  const row = page.locator('tr', { hasText: code }).first();
-  await row.waitFor({ timeout: WAIT }).catch(() => {
-    throw new Error(`生産者コード ${code} の農家が一覧にありません（${farm['名前'] || ''}）`);
-  });
-  const radio = row.locator('input[type=radio], label, td').first();
-  await radio.click();
-
-  // 丸を押しただけで農場の画面に移る作りと、決定ボタンを押す作りの両方に備える
-  const moved = await page.waitForURL(/DLL60/i, { timeout: 5000 }).then(() => true).catch(() => false);
-  if (!moved) {
-    await clickByText(page, ['決定', '選択', 'OK', '次へ', '表示']);
-    await page.waitForURL(/DLL60/i, { timeout: WAIT });
-  }
+  // 丸は見た目用の span に隠れていることがあるので、要素に直接クリックを送る
+  await radio.first().evaluate((el) => { if (!el.checked) el.click(); });
+  await page.locator('#BTNCHANGE').click();
+  await page.waitForURL(/DLL60/i, { timeout: WAIT });
   await page.waitForLoadState('domcontentloaded');
 }
 
 // ---------- 牛一覧を取る ----------
 
-async function downloadCowList(page, farm, outRoot) {
-  await clickByText(page, ['牛一覧']);
-  await page.waitForLoadState('domcontentloaded');
-  await page.getByText('在籍牛一覧').first().waitFor({ timeout: WAIT }).catch(() => {});
+// 牛一覧の絞り込みは前回の状態が残る（「未経産牛」だけになっていたこともある）。
+// 全頭を取りたいので、絞り込みのチェックをぜんぶ入れてから一覧を読み直す。
+const ALL_FILTERS = ['経産牛', '未経産牛', '搾乳牛', '乾乳牛', '素牛', '肥育牛', '初生', '預かっている牛', '預けている牛'];
 
+async function checkAllFilters(page) {
+  const { found, turnedOn } = await page.locator('input[type=checkbox]').evaluateAll((els, names) => {
+    const labelOf = (el) => {
+      const byFor = el.id && document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+      const t = (byFor || el.closest('label') || el.parentElement || {}).innerText || '';
+      return t.trim();
+    };
+    const on = [];
+    let n = 0;
+    for (const el of els) {
+      const t = labelOf(el);
+      if (!names.includes(t)) continue;
+      n++;
+      if (!el.checked) { el.click(); on.push(t); }
+    }
+    return { found: n, turnedOn: on };
+  }, ALL_FILTERS);
+  if (found < ALL_FILTERS.length) {
+    // 見つからないと一部の牛しか出ないおそれがある。止めはしないが、記録に残して気づけるようにする。
+    log(`  ⚠ 絞り込みのチェックが ${found}/${ALL_FILTERS.length} 個しか見つかりません。全頭が出ていないかもしれません`);
+  }
+  if (turnedOn.length) {
+    log(`  絞り込みを全部に戻します（${turnedOn.join('・')} を入れた）`);
+    const reloaded = page.waitForResponse((r) => /GetList/i.test(r.url()), { timeout: WAIT }).catch(() => null);
+    await clickByText(page, ['この条件で表示']);
+    await reloaded;
+    await page.waitForTimeout(500);
+  }
+}
+
+async function downloadCowList(page, farm, outRoot) {
+  // 上のメニューの「牛一覧」（/SeisanPC/DNL00）
+  const menu = page.locator('a[href$="/SeisanPC/DNL00"], a[href="DNL00"]').first();
+  if (await menu.count()) await menu.click();
+  else await clickByText(page, ['牛一覧']);
+  await page.waitForURL(/DNL00/i, { timeout: WAIT });
+  await page.waitForLoadState('networkidle').catch(() => {});
+
+  await checkAllFilters(page);
+
+  // CSV はリンクを開くのではなく、押すと裏で POST が飛んでファイルが届く作り。
+  // 押す場所がずれて牛の行を押さないよう、座標ではなく a.csv-output を直接押す。
   const dl = page.waitForEvent('download', { timeout: WAIT * 2 });
-  await clickByText(page, ['表示中リストCSV出力', 'CSV出力']);
+  const btn = page.locator('a.csv-output').first();
+  if (await btn.count()) await btn.click();
+  else await clickByText(page, ['表示中リストCSV出力']);
   const file = await dl;
 
   const dir = path.join(outRoot, safeName(`${farm['生産者コード']}_${farm['名前'] || ''}`));

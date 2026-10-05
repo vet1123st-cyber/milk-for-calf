@@ -21,7 +21,9 @@ const FARMS = [
   { code: '00000002', name: '試験　二郎', csv: 'farmB.csv' },
 ];
 const USER = 'farmers\\test', PASS = 'secret';
-const log = { signIns: 0 };
+const log = { signIns: 0, viaPortal: 0, directHit: 0 };
+const ALL = ['経産牛', '未経産牛', '搾乳牛', '乾乳牛', '素牛', '肥育牛', '初生', '預かっている牛', '預けている牛'];
+let base = '';
 
 const page = (body) => `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>${body}</body></html>`;
 const cookie = (req, k) => (req.headers.cookie || '').split(/;\s*/).map((s) => s.split('=')).find((p) => p[0] === k)?.[1];
@@ -53,31 +55,89 @@ const server = http.createServer((req, res) => {
     res.writeHead(302, { location: '/adfs/ls?back=' + encodeURIComponent(req.url) });
     return res.end();
   }
+  // ポータル。酪畜履歴は Redirector.aspx を通して新しいタブで開く（本物と同じ）
+  if (u.pathname === '/Portal/') {
+    return send(`<table><tr><td><a href="Redirector.aspx?ushi=${encodeURIComponent(base + '/SeisanPC/')}" target="_blank"><span>酪畜履歴</span></a></td></tr></table>`);
+  }
+  if (u.pathname === '/Portal/Redirector.aspx') {
+    log.viaPortal++;
+    res.writeHead(302, { 'set-cookie': 'rk=1; path=/', location: '/SeisanPC/DZL99' });
+    return res.end();
+  }
+  // 酪畜履歴はポータルを通っていないと入れない
+  if (u.pathname.startsWith('/SeisanPC/') && cookie(req, 'rk') !== '1') {
+    log.directHit++;
+    return send('<p>セッションが切れました。ポータルからやり直してください。</p>');
+  }
   if (u.pathname === '/SeisanPC/DZL99') {
-    const want = u.searchParams.get('code') || '';
-    const rows = FARMS.filter((f) => !want || f.code === want)
-      .map((f) => `<tr><td><input type=radio name=farm onclick="location.href='/SeisanPC/DLL60?farm=${f.code}'"></td><td>${f.name}</td><td>${f.code}</td></tr>`).join('');
-    return send(`<h2>ユーザー変更</h2><form><span>生産者コード</span><input type=text name=code value="${want}">
-      <button type=submit>この条件で表示</button></form><table><tr><th></th><th>生産者名</th><th>生産者コード</th></tr>${rows}</table>`);
+    const rows = FARMS.map((f) => `<tr data-code="${f.code}"><td><input name="radioSelect" type="radio" value="${f.code}" style="display:none"><span class="radio"></span></td><td>${f.name}</td><td>${f.code}</td></tr>`).join('');
+    return send(`<span>JA</span><span>生産者コード</span><input class="SEISANCODE is-number is-integer" data-name="生産者コード" maxlength="8" name="SEISANCODE" type="tel">
+      <a class="jsSearchUser btn search-btn icon-reload" tabindex="0">この条件で表示</a>
+      <table><tr><th></th><th>生産者名</th><th>生産者コード</th></tr>${rows}</table>
+      <a class="btn-link green" id="BTNCHANGE">変更</a>
+      <script>
+        document.querySelector('.jsSearchUser').onclick = () => {
+          const c = document.querySelector('[name=SEISANCODE]').value;
+          document.querySelectorAll('tr[data-code]').forEach((tr) => { tr.style.display = !c || tr.dataset.code === c ? '' : 'none'; });
+        };
+        document.querySelectorAll('span.radio').forEach((sp) => sp.onclick = () => sp.previousElementSibling.click());
+        document.getElementById('BTNCHANGE').onclick = () => {
+          const r = document.querySelector('[name=radioSelect]:checked');
+          if (r) location.href = '/SeisanPC/DLL60?farm=' + r.value;
+        };
+      </script>`);
   }
   if (u.pathname === '/SeisanPC/DLL60') {
     res.setHeader('set-cookie', 'farm=' + u.searchParams.get('farm') + '; path=/');
-    return send(`<p>農場名：${u.searchParams.get('farm')}</p><a href="/SeisanPC/DLL61">牛一覧</a><a href="#">CSV出力</a>`);
+    return send(`<nav id="menu"><ul class="dropdown"><li><a href="/SeisanPC/DLL60">農場状況</a></li><li><a href="/SeisanPC/DNL00"><svg width="10" height="10"></svg><span>牛一覧</span></a></li></ul></nav>
+      <p>農場名：${u.searchParams.get('farm')}</p><div class="flex-row-space"><a class="arrow-link csv-output" href="DLL60/CsvOutput">表示中リストCSV出力</a></div>`);
   }
-  if (u.pathname === '/SeisanPC/DLL61') {
-    return send(`<h2>在籍牛一覧</h2><a href="/SeisanPC/csv">表示中リストCSV出力</a>`);
+  if (u.pathname === '/SeisanPC/DNL00') {
+    // 絞り込みは前回の状態が残る。はじめは「未経産牛」だけ（拡張機能で見たときと同じ状態）
+    const flt = decodeURIComponent(cookie(req, 'flt') || '未経産牛').split(',');
+    const boxes = ALL.map((n) => `<label class="check"><input type="checkbox" name="flt" value="${n}" style="display:none" ${flt.includes(n) ? 'checked' : ''}><span class="box"></span>${n}</label>`).join('');
+    return send(`<h2>在籍牛一覧</h2><div class="filter">${boxes}</div>
+      <button type="button" id="show">この条件で表示</button><span id="cnt"></span>
+      <div class="flex-row-space"><a class="arrow-link csv-output" href="DNL00/CsvOutput">表示中リストCSV出力</a></div>
+      <script>
+        const sel = () => [...document.querySelectorAll('[name=flt]:checked')].map((e) => e.value).join(',');
+        document.getElementById('show').onclick = async () => {
+          const r = await fetch('/SeisanPC/DNL00/GetList', { method: 'POST', body: sel() });
+          document.getElementById('cnt').textContent = await r.text();
+        };
+        // CSV はリンクを開くのではなく、POST で取る
+        document.querySelector('a.csv-output').onclick = (e) => {
+          e.preventDefault();
+          const f = document.createElement('form'); f.method = 'post'; f.action = 'DNL00/CsvOutput';
+          document.body.appendChild(f); f.submit();
+        };
+      </script>`);
   }
-  if (u.pathname === '/SeisanPC/csv') {
+  if (u.pathname === '/SeisanPC/DNL00/GetList' && req.method === 'POST') {
+    let b = ''; req.on('data', (c) => (b += c)); req.on('end', () => {
+      res.writeHead(200, { 'set-cookie': 'flt=' + encodeURIComponent(b) + '; path=/', 'content-type': 'text/plain; charset=utf-8' });
+      res.end('表示しました');
+    });
+    return;
+  }
+  if (u.pathname === '/SeisanPC/DNL00/CsvOutput') {
+    if (req.method !== 'POST') { res.writeHead(405); return res.end(); }
     const f = FARMS.find((x) => x.code === cookie(req, 'farm'));
+    const flt = decodeURIComponent(cookie(req, 'flt') || '未経産牛').split(',');
+    let buf = fs.readFileSync(path.join(HERE, 'fixtures', f.csv));
+    if (!ALL.every((n) => flt.includes(n))) {
+      // 絞り込みが全部でなければ、見出しと未経産（産次が「-」）の行だけ返す
+      const lines = buf.toString('latin1').split('\r\n');
+      buf = Buffer.from(lines.filter((l, i) => i === 0 || l.split(',')[6] === '-').join('\r\n') + '\r\n', 'latin1');
+    }
     res.writeHead(200, { 'content-type': 'text/csv', 'content-disposition': `attachment; filename="list.csv"` });
-    return res.end(fs.readFileSync(path.join(HERE, 'fixtures', f.csv)));
+    return res.end(buf);
   }
-  if (u.pathname === '/Portal/') return send(`<a href="/SeisanPC/DZL99">酪畜履歴</a>`);
   res.writeHead(404); res.end();
 });
 
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
-const base = `http://127.0.0.1:${server.address().port}`;
+base = `http://127.0.0.1:${server.address().port}`;
 
 // 本番のスクリプトを、偽のサイトと試験用の設定に向けて動かす
 const cfgFile = path.join(OUT, 'config.json');
@@ -99,6 +159,9 @@ const r = {};
 r['取れなかったものがない'] = failed.length === 0;
 r['サインインは1回だけ'] = log.signIns === 1;
 r['全農家のフォルダができた'] = FARMS.every((f) => fs.existsSync(path.join(save, `${f.code}_${f.name.replace(/\s+/g, ' ')}`, '牛一覧_最新.csv')));
+r['ポータルを通って入った'] = log.viaPortal === 1 && log.directHit === 0;
+const rowsOf = (f) => fs.readFileSync(path.join(save, `${f.code}_${f.name.replace(/\s+/g, ' ')}`, '牛一覧_最新.csv'), 'latin1').split('\r\n').filter(Boolean).length - 1;
+r['未経産だけに絞られていても全頭取れた'] = rowsOf(FARMS[0]) === 3 && rowsOf(FARMS[1]) === 1;
 r['検索の画面ができた'] = fs.existsSync(path.join(save, '牛検索.html'));
 
 // 検索の画面を開いて、4桁で引いてみる

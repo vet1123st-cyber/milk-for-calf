@@ -55,6 +55,8 @@ td:first-child{color:var(--muted);white-space:nowrap}
 .cand-sub{font-size:14px;color:var(--muted);font-weight:700}
 .cand .tags{grid-column:1/-1;margin:0}
 .back{font:inherit;font-size:15px;font-weight:800;color:var(--green);background:var(--green-soft);border:none;border-radius:10px;padding:8px 14px;cursor:pointer}
+.picker{text-align:left;line-height:1.8}
+.pick{display:inline-block;margin-top:10px;background:var(--green);color:#fff;font-weight:800;border-radius:12px;padding:10px 20px;cursor:pointer}
 .empty{background:var(--card);border:1px dashed #C0D0C0;border-radius:16px;padding:30px;text-align:center;color:var(--muted);font-size:15px}
 .farms{margin-top:28px;font-size:13px;color:var(--muted)}
 .farms summary{font-size:13px}
@@ -215,8 +217,62 @@ function search(){
   render();
 }
 
+// ---------- ひな形のまま開いたとき：手元のCSVを選んでその場で試せるようにする ----------
+// 本番の牛検索.html にはデータが入っているので、ここは使われない。
+
+function splitCsvLine(line){
+  var out=[],cur='',q=false;
+  for(var i=0;i<line.length;i++){
+    var c=line[i];
+    if(q){ if(c==='"'&&line[i+1]==='"'){cur+='"';i++;} else if(c==='"') q=false; else cur+=c; }
+    else if(c==='"') q=true; else if(c===','){ out.push(cur); cur=''; } else cur+=c;
+  }
+  out.push(cur); return out;
+}
+function kana(s){ return String(s||'').normalize('NFKC').replace(/([ァ-ヶー])-/g,'$1ー').replace(/([ァ-ヶー])-/g,'$1ー').trim(); }
+
+function showPicker(){
+  $('farms').hidden=true;
+  $('list').innerHTML='<div class="empty picker">'
+    +'<p><b>これは牛検索の「ひな形」です（まだデータが入っていません）。</b></p>'
+    +'<p>ふだんは「今すぐ取る.bat」か毎週の自動取得のあとに、保存先フォルダにできる <b>牛検索.html</b> を開きます。</p>'
+    +'<p style="margin-top:14px">今すぐ試すなら、TAF から落とした牛一覧のCSVを選んでください（何戸ぶんでも一度に選べます）。<br>CSVはこのPCの中で読むだけで、どこにも送りません。</p>'
+    +'<label class="pick">CSVを選ぶ<input type="file" id="pick" accept=".csv" multiple hidden></label>'
+    +'<p class="hint" style="margin-top:8px">この画面にCSVをドラッグしても読めます</p></div>';
+  $('pick').addEventListener('change',function(){ loadFiles(this.files); });
+  document.addEventListener('dragover',function(e){ e.preventDefault(); });
+  document.addEventListener('drop',function(e){ e.preventDefault(); if(!DATA) loadFiles(e.dataTransfer.files); });
+}
+
+function loadFiles(files){
+  files=[].slice.call(files||[]).filter(function(f){ return /\.csv$/i.test(f.name); });
+  if(!files.length) return;
+  Promise.all(files.map(function(f){ return f.arrayBuffer().then(function(b){ return {f:f,b:b}; }); })).then(function(list){
+    var farms=[],cows=[],header=null;
+    list.forEach(function(x){
+      var text=new TextDecoder('shift_jis').decode(x.b);
+      var rows=text.split(/\r?\n/).filter(function(l){ return l.trim(); }).map(splitCsvLine);
+      if(rows.length<1) return;
+      var h=rows[0].map(function(s){ return s.trim(); });
+      if(h.indexOf('耳標ID')<0) return; // 牛一覧のCSVではない
+      if(!header||h.length>header.length) header=h;
+      // TAF が付けるファイル名（1011_00007085_…）から生産者コードを取る。農家名は分からないのでコードで出す
+      var m=x.f.name.match(/_(\d{8})_/);
+      var code=m? m[1] : '';
+      var fi=farms.push({code:code,name:code? '生産者 '+code : x.f.name,date:new Date(x.f.lastModified).toISOString().slice(0,10),n:rows.length-1})-1;
+      rows.slice(1).forEach(function(r){
+        var o={_f:fi}; h.forEach(function(k,i){ o[k]=kana(r[i]); }); cows.push(o);
+      });
+    });
+    if(!cows.length){ alert('牛一覧のCSVが読めませんでした（見出しに「耳標ID」がありません）'); return; }
+    DATA={built:new Date().toISOString(),header:header,farms:farms,cows:cows};
+    init();
+    $('q').focus();
+  });
+}
+
 function init(){
-  if(!DATA){ $('list').innerHTML='<div class="empty">データが入っていません。build-viewer.mjs で作り直してください。</div>'; return; }
+  if(!DATA){ showPicker(); return; }
   var built=new Date(DATA.built);
   var oldest=DATA.farms.reduce(function(a,f){ return !a||f.date<a? f.date : a; },'');
   var age=Math.floor((Date.now()-new Date(oldest).getTime())/86400000);
@@ -228,6 +284,7 @@ function init(){
     .sort(function(a,b){ return (a[0].name||'').localeCompare(b[0].name||'','ja'); })
     .forEach(function(p){ var o=document.createElement('option'); o.value=p[1]; o.textContent=(p[0].name||p[0].code)+'（'+p[0].n+'頭）'; sel.appendChild(o); });
 
+  $('farms').hidden=false;
   $('farms').innerHTML='<summary>取り込んだ農家と取得日</summary><table>'
     +DATA.farms.map(function(f){ return '<tr><td>'+esc(f.code)+'</td><td>'+esc(f.name)+'</td><td>'+esc(f.n)+'頭</td><td>'+esc(f.date)+'</td></tr>'; }).join('')
     +'</table>';

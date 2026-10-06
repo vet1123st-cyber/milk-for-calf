@@ -19,10 +19,14 @@ fs.mkdirSync(OUT, { recursive: true });
 const FARMS = [
   { code: '00000001', name: '試験　一郎', csv: 'farmA.csv' },
   { code: '00000002', name: '試験　二郎', csv: 'farmB.csv' },
+  // 一覧の下の方にあって、スクロールしないと出てこない。選ぶとホームが別の画面（DLL70）
+  { code: '00000003', name: '試験　三郎', csv: 'farmC.csv', home: 'DLL70' },
+  // 見る権限がない農家（取らない農家に入れておく）
+  { code: '00000004', name: '権限　なし', csv: null },
 ];
 // JA ごとにアカウントが違い、見える農家も違う（清水町と新得町のように）
 const ACCOUNTS = [
-  { name: '清水町', user: 'farmers\\shimizu', pass: 'secret1', farms: ['00000001'] },
+  { name: '清水町', user: 'farmers\\shimizu', pass: 'secret1', farms: ['00000001', '00000003', '00000004'] },
   { name: '新得町', user: 'farmers\\shintoku', pass: 'secret2', farms: ['00000002'] },
 ];
 const log = { signIns: 0, viaPortal: 0, directHit: 0 };
@@ -76,22 +80,44 @@ const server = http.createServer((req, res) => {
     return send('<p>セッションが切れました。ポータルからやり直してください。</p>');
   }
   if (u.pathname === '/SeisanPC/DZL99') {
-    const rows = FARMS.filter((f) => acc.farms.includes(f.code)).map((f) => `<tr data-code="${f.code}"><td><input name="radioSelect" type="radio" value="${f.code}" style="display:none"><span class="radio"></span></td><td>${f.name}</td><td>${f.code}</td></tr>`).join('');
+    const mine = FARMS.filter((f) => acc.farms.includes(f.code));
+    const rowOf = (f) => `<tr data-code="${f.code}"><td><input name="radioSelect" type="radio" value="${f.code}" style="display:none"><span class="radio"></span></td><td>${f.name}</td><td>${f.code}</td></tr>`;
+    // はじめは1戸だけ。いちばん下までスクロールすると続きが読み込まれる（本物と同じ）
+    const rows = rowOf(mine[0]);
+    const rest = JSON.stringify(mine.slice(1).map(rowOf));
+    const homes = JSON.stringify(Object.fromEntries(FARMS.map((f) => [f.code, f.home || 'DLL60'])));
     return send(`<span>JA</span><span>生産者コード</span><input class="SEISANCODE is-number is-integer" data-name="生産者コード" maxlength="8" name="SEISANCODE" type="tel">
       <a class="jsSearchUser btn search-btn icon-reload" tabindex="0">この条件で表示</a>
-      <table><tr><th></th><th>生産者名</th><th>生産者コード</th></tr>${rows}</table>
+      <p>${mine.length} 件</p>
+      <table id="t"><tr><th></th><th>生産者名</th><th>生産者コード</th></tr>${rows}</table>
+      <div style="height:2500px"></div>
       <a class="btn-link green" id="BTNCHANGE">変更</a>
       <script>
+        const rest = ${rest}, homes = ${homes};
+        const wire = () => document.querySelectorAll('span.radio').forEach((sp) => sp.onclick = () => sp.previousElementSibling.click());
+        window.addEventListener('scroll', () => {
+          if (rest.length && window.scrollY + innerHeight >= document.body.scrollHeight - 50) {
+            const more = rest.splice(0);
+            setTimeout(() => { document.getElementById('t').insertAdjacentHTML('beforeend', more.join('')); wire(); }, 500);
+          }
+        });
         document.querySelector('.jsSearchUser').onclick = () => {
           const c = document.querySelector('[name=SEISANCODE]').value;
+          const hit = rest.filter((r) => r.includes('"' + c + '"'));
+          if (hit.length) { document.getElementById('t').insertAdjacentHTML('beforeend', hit.join('')); wire(); }
           document.querySelectorAll('tr[data-code]').forEach((tr) => { tr.style.display = !c || tr.dataset.code === c ? '' : 'none'; });
         };
-        document.querySelectorAll('span.radio').forEach((sp) => sp.onclick = () => sp.previousElementSibling.click());
+        wire();
         document.getElementById('BTNCHANGE').onclick = () => {
           const r = document.querySelector('[name=radioSelect]:checked');
-          if (r) location.href = '/SeisanPC/DLL60?farm=' + r.value;
+          if (r) location.href = '/SeisanPC/' + homes[r.value] + '?farm=' + r.value;
         };
       </script>`);
+  }
+  if (u.pathname === '/SeisanPC/DLL70') {
+    // ホームが違う農家。牛一覧へのメニューが無い
+    res.setHeader('set-cookie', 'farm=' + u.searchParams.get('farm') + '; path=/');
+    return send(`<p>別のホーム画面：${u.searchParams.get('farm')}</p>`);
   }
   if (u.pathname === '/SeisanPC/DLL60') {
     res.setHeader('set-cookie', 'farm=' + u.searchParams.get('farm') + '; path=/');
@@ -154,7 +180,7 @@ base = `http://127.0.0.1:${server.address().port}`;
 
 // 本番のスクリプトを、偽のサイトと試験用の設定に向けて動かす
 const cfgFile = path.join(OUT, 'config.json');
-fs.writeFileSync(cfgFile, JSON.stringify({ '保存先フォルダ': path.join(OUT, 'save'), '農家': '全部', 'ブラウザ': '' }));
+fs.writeFileSync(cfgFile, JSON.stringify({ '保存先フォルダ': path.join(OUT, 'save'), '農家': '全部', '取らない農家': ['00000004'], 'ブラウザ': '' }));
 Object.assign(process.env, {
   TAF_PORTAL_URL: base + '/Portal/',
   TAF_RAKUCHIKU_URL: base + '/SeisanPC/',
@@ -179,7 +205,9 @@ const save = path.join(OUT, 'save');
 const r = {};
 r['取れなかったものがない'] = failed.length === 0;
 r['アカウントごとにサインインは1回ずつ'] = log.signIns === 2;
-r['全農家のフォルダができた'] = FARMS.every((f) => fs.existsSync(path.join(save, `${f.code}_${f.name.replace(/\s+/g, ' ')}`, '牛一覧_最新.csv')));
+r['スクロールしないと出ない農家・ホームが違う農家も取れた'] = fs.existsSync(path.join(save, '00000003_試験 三郎', '牛一覧_最新.csv'));
+r['取らない農家は取りに行かない'] = !fs.readdirSync(save).some((n) => n.startsWith('00000004'));
+r['全農家のフォルダができた'] = FARMS.filter((f) => f.csv).every((f) => fs.existsSync(path.join(save, `${f.code}_${f.name.replace(/\s+/g, ' ')}`, '牛一覧_最新.csv')));
 r['ポータルを通って入った'] = log.viaPortal === 2 && log.directHit === 0;
 const rowsOf = (f) => fs.readFileSync(path.join(save, `${f.code}_${f.name.replace(/\s+/g, ' ')}`, '牛一覧_最新.csv'), 'latin1').split('\r\n').filter(Boolean).length - 1;
 r['未経産だけに絞られていても全頭取れた'] = rowsOf(FARMS[0]) === 3 && rowsOf(FARMS[1]) === 1;

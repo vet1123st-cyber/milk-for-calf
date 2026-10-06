@@ -189,9 +189,40 @@ async function backToFarmSelect(page) {
 
 // 農家を選ぶ画面に出ている農家を、ぜんぶ読み取る。
 // 丸（input name=radioSelect）の value が生産者コードになっている。
+// 農家の一覧は、下までスクロールすると続きが読み込まれる作り（はじめは15戸ほどしか出ない）。
+// 上に出ている「○○ 件」の数になるか、増えなくなるまで下へ送り続ける。
+async function loadAllFarmRows(page) {
+  const radios = page.locator('input[name=radioSelect]');
+  await radios.first().waitFor({ state: 'attached', timeout: WAIT });
+  const want = await page.getByText(/^\s*\d+\s*件\s*$/).first().innerText({ timeout: 3000 })
+    .then((t) => +t.match(/(\d+)/)[1]).catch(() => 0);
+  let last = -1, still = 0;
+  for (let i = 0; i < 60; i++) {
+    const n = await radios.count();
+    if (want && n >= want) break;
+    if (n === last) { if (++still >= 4) break; } else still = 0;
+    last = n;
+    // 最後の行を画面に出し、一覧の枠と画面の両方をいちばん下まで送る。マウスも最後の行に置く
+    await radios.last().evaluate((el) => {
+      const row = el.closest('tr') || el;
+      row.scrollIntoView({ block: 'end' });
+      for (let p = row.parentElement; p; p = p.parentElement) {
+        if (p.scrollHeight > p.clientHeight + 5) p.scrollTop = p.scrollHeight;
+      }
+      window.scrollTo(0, document.body.scrollHeight);
+    }).catch(() => {});
+    await page.mouse.wheel(0, 2000).catch(() => {});
+    await radios.last().locator('xpath=ancestor::tr[1]').hover({ force: true, timeout: 2000 }).catch(() => {});
+    await page.waitForTimeout(1500);
+  }
+  const n = await radios.count();
+  if (want && n < want) log(`  ⚠ 農家の一覧は ${want} 件のはずが、${n} 件しか読み込めませんでした`);
+  return n;
+}
+
 async function listFarms(page) {
   await backToFarmSelect(page);
-  await page.locator('input[name=radioSelect]').first().waitFor({ state: 'attached', timeout: WAIT });
+  await loadAllFarmRows(page);
   const farms = await page.locator('input[name=radioSelect]').evaluateAll((els) => els.map((el) => {
     const code = (el.value || '').trim();
     const tr = el.closest('tr');
@@ -207,6 +238,8 @@ async function chooseFarm(page, farm) {
   const code = farm['生産者コード'];
   await backToFarmSelect(page);
   let radio = page.locator(`input[name=radioSelect][value="${code}"]`);
+  // 下の方の農家は、スクロールして読み込まないと一覧に出てこない
+  if (!(await radio.count())) await loadAllFarmRows(page);
   if (!(await radio.count())) {
     // 一覧に見当たらないときは、生産者コードで絞って探し直す
     await page.locator('input[name=SEISANCODE]').fill(code);
@@ -218,7 +251,8 @@ async function chooseFarm(page, farm) {
   // 丸は見た目用の span に隠れていることがあるので、要素に直接クリックを送る
   await radio.first().evaluate((el) => { if (!el.checked) el.click(); });
   await page.locator('#BTNCHANGE').click();
-  await page.waitForURL(/DLL60/i, { timeout: WAIT });
+  // 農家によって最初に出る画面（ホーム）が違う。どこでもよいので、選ぶ画面から移ったら次へ
+  await page.waitForURL((u) => !/DZL99/i.test(u.toString()), { timeout: WAIT });
   await page.waitForLoadState('domcontentloaded');
 }
 
@@ -313,10 +347,14 @@ async function fetchCsv(page, file) {
 
 async function downloadCowList(page, farm, outRoot) {
   // 上のメニューの「牛一覧」（/SeisanPC/DNL00）
-  const menu = page.locator('a[href$="/SeisanPC/DNL00"], a[href="DNL00"]').first();
-  if (await menu.count()) await menu.click();
-  else await clickByText(page, ['牛一覧']);
-  await page.waitForURL(/DNL00/i, { timeout: WAIT });
+  // ホームの画面が農家ごとに違ってメニューの場所も違うので、牛一覧の画面を直接開く
+  await page.goto(RAKUCHIKU + 'DNL00', { waitUntil: 'domcontentloaded' });
+  if (!/DNL00/i.test(page.url())) {
+    const menu = page.locator('a[href$="/SeisanPC/DNL00"], a[href="DNL00"]').first();
+    if (await menu.count()) await menu.click();
+    else await clickByText(page, ['牛一覧']);
+    await page.waitForURL(/DNL00/i, { timeout: WAIT });
+  }
   await page.waitForLoadState('networkidle').catch(() => {});
 
   await checkAllFilters(page);
@@ -366,9 +404,13 @@ export async function run() {
         page = await openRakuchiku(context, page, acc);
         const listed = await listFarms(page);
         // 「全部」ならこのアカウントで見える農家ぜんぶ。並べてあるときは、このアカウントで見えるものだけ
-        const farms = cfg['農家'] === '全部'
+        const skip = new Set((cfg['取らない農家'] || []).map((c) => String(c).trim()));
+        const farms = (cfg['農家'] === '全部'
           ? listed
-          : cfg['農家'].filter((f) => listed.some((x) => x['生産者コード'] === f['生産者コード']));
+          : cfg['農家'].filter((f) => listed.some((x) => x['生産者コード'] === f['生産者コード'])))
+          .filter((f) => !skip.has(f['生産者コード']));
+        const skipped = listed.filter((f) => skip.has(f['生産者コード']));
+        if (skipped.length) log(`取らない農家: ${skipped.map((f) => `${f['生産者コード']} ${f['名前']}`).join('、')}`);
         log(`はじめます（${farms.length} 戸）`);
         for (const farm of farms) {
           const label = `${farm['生産者コード']} ${farm['名前'] || ''}`.trim();

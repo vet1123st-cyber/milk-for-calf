@@ -18,6 +18,9 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PORTAL = process.env.TAF_PORTAL_URL || 'https://www.jatokachi.jp/Portal/';
 const RAKUCHIKU = process.env.TAF_RAKUCHIKU_URL || 'https://rakuchiku.jatokachi.jp/SeisanPC/';
 
+// 版。差し替えたつもりで古いファイルが残っていても、黒い画面の最初の行で見分けられるようにする
+const VERSION = '2026-10-06 版7（全農家・ホーム違い・取らない農家）';
+
 const WAIT = 30_000; // サイトが重い朝もあるので、1つの操作に30秒までは待つ
 
 // ---------- 設定を読む ----------
@@ -388,6 +391,7 @@ export async function run() {
   const opts = { headless: !cfg['画面を出す'] };
   if (process.env.TAF_BROWSER_PATH) opts.executablePath = process.env.TAF_BROWSER_PATH;
   else if (cfg['ブラウザ']) opts.channel = cfg['ブラウザ']; // Windows に入っている Edge をそのまま使う
+  log(`TAF 牛一覧の取得 ${VERSION}`);
   const browser = await chromium.launch(opts);
 
   const failed = [];

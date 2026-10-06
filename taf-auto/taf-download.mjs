@@ -22,19 +22,35 @@ const WAIT = 30_000; // サイトが重い朝もあるので、1つの操作に3
 
 // ---------- 設定を読む ----------
 
-function readEnv() {
-  const f = path.join(HERE, '.env');
+// .env から TAF のアカウントを読む。JA ごとに ID が違うので、いくつでも並べられる。
+//   TAF_NAME_1=清水町   TAF_USER_1=farmers\…   TAF_PASS_1=…
+//   TAF_NAME_2=新得町   TAF_USER_2=farmers\…   TAF_PASS_2=…
+// 番号なしの TAF_USER / TAF_PASS も1つ目として使える（前の書き方）。
+function readAccounts() {
+  const f = process.env.TAF_ENV || path.join(HERE, '.env');
   const env = {};
   if (fs.existsSync(f)) {
-    for (const line of fs.readFileSync(f, 'utf8').split(/\r?\n/)) {
-      const m = line.match(/^\s*([A-Z_]+)\s*=\s*(.*)\s*$/);
-      if (m) env[m[1]] = m[2];
+    for (const line of fs.readFileSync(f, 'utf8').replace(/^﻿/, '').split(/\r?\n/)) {
+      const m = line.match(/^\s*([A-Z_0-9]+)\s*=\s*(.*?)\s*$/);
+      if (m) env[m[1]] = m[2].replace(/^"(.*)"$/, '$1');
     }
   }
-  return {
-    user: process.env.TAF_USER || env.TAF_USER,
-    pass: process.env.TAF_PASS || env.TAF_PASS,
-  };
+  Object.keys(process.env).filter((k) => /^TAF_(USER|PASS|NAME)(_\d+)?$/.test(k)).forEach((k) => { env[k] = process.env[k]; });
+
+  const accounts = [];
+  if (env.TAF_USER || env.TAF_PASS) accounts.push({ name: env.TAF_NAME || '', user: env.TAF_USER, pass: env.TAF_PASS });
+  const nums = [...new Set(Object.keys(env).map((k) => (k.match(/^TAF_(?:USER|PASS|NAME)_(\d+)$/) || [])[1]).filter(Boolean))]
+    .sort((x, y) => x - y);
+  for (const n of nums) accounts.push({ name: env[`TAF_NAME_${n}`] || `アカウント${n}`, user: env[`TAF_USER_${n}`], pass: env[`TAF_PASS_${n}`] });
+
+  const usable = accounts.filter((a) => a.user || a.pass);
+  if (!usable.length) throw new Error('.env に TAF の ID とパスワード（TAF_USER_1 と TAF_PASS_1）を書いてください。');
+  for (const a of usable) {
+    if (!a.user || !a.pass || /ここに/.test(a.user + a.pass)) {
+      throw new Error(`.env の「${a.name || 'アカウント'}」の ID かパスワードが書けていません。`);
+    }
+  }
+  return usable;
 }
 
 function readConfig() {
@@ -272,8 +288,7 @@ async function downloadCowList(page, farm, outRoot) {
 
 export async function run() {
   const cfg = readConfig();
-  const cred = readEnv();
-  if (!cred.user || !cred.pass) throw new Error('.env に TAF_USER と TAF_PASS を書いてください。');
+  const accounts = readAccounts();
 
   const outRoot = cfg['保存先フォルダ'];
   fs.mkdirSync(path.join(HERE, 'logs'), { recursive: true });
@@ -283,31 +298,45 @@ export async function run() {
   if (process.env.TAF_BROWSER_PATH) opts.executablePath = process.env.TAF_BROWSER_PATH;
   else if (cfg['ブラウザ']) opts.channel = cfg['ブラウザ']; // Windows に入っている Edge をそのまま使う
   const browser = await chromium.launch(opts);
-  const context = await browser.newContext({ acceptDownloads: true, locale: 'ja-JP' });
-  let page = await context.newPage();
 
   const failed = [];
   try {
-    page = await openRakuchiku(context, page, cred);
-    const farms = cfg['農家'] === '全部' ? await listFarms(page) : cfg['農家'];
-    log(`はじめます（${farms.length} 戸）`);
-    for (const farm of farms) {
-      const label = `${farm['生産者コード']} ${farm['名前'] || ''}`.trim();
-      log(`${label}`);
+    for (const acc of accounts) {
+      // アカウントごとにまっさらな窓で入る（前のアカウントのサインインが残らないように）
+      const title = acc.name || acc.user;
+      log(`=== ${title} ===`);
+      const context = await browser.newContext({ acceptDownloads: true, locale: 'ja-JP' });
+      let page = await context.newPage();
       try {
-        await chooseFarm(page, farm);
-        await downloadCowList(page, farm, outRoot);
+        page = await openRakuchiku(context, page, acc);
+        const listed = await listFarms(page);
+        // 「全部」ならこのアカウントで見える農家ぜんぶ。並べてあるときは、このアカウントで見えるものだけ
+        const farms = cfg['農家'] === '全部'
+          ? listed
+          : cfg['農家'].filter((f) => listed.some((x) => x['生産者コード'] === f['生産者コード']));
+        log(`はじめます（${farms.length} 戸）`);
+        for (const farm of farms) {
+          const label = `${farm['生産者コード']} ${farm['名前'] || ''}`.trim();
+          log(`${label}`);
+          try {
+            await chooseFarm(page, farm);
+            await downloadCowList(page, farm, outRoot);
+          } catch (e) {
+            // 1戸でつまずいても、残りの農家は取りに行く
+            log(`  ✗ ${e.message}`);
+            await keepEvidence(page, label);
+            failed.push(label);
+          }
+        }
       } catch (e) {
-        // 1戸でつまずいても、残りの農家は取りに行く
-        log(`  ✗ ${e.message}`);
-        await keepEvidence(page, label);
-        failed.push(label);
+        // このアカウントで入れなくても、次のアカウントは試す
+        log(`✗ ${title}: ${e.message}`);
+        await keepEvidence(page, `サインイン_${title}`);
+        failed.push(`${title} のサインイン`);
+      } finally {
+        await context.close();
       }
     }
-  } catch (e) {
-    log(`✗ ${e.message}`);
-    await keepEvidence(page, 'サインイン');
-    failed.push('サインイン');
   } finally {
     await browser.close();
   }

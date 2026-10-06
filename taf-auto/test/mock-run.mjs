@@ -20,7 +20,11 @@ const FARMS = [
   { code: '00000001', name: '試験　一郎', csv: 'farmA.csv' },
   { code: '00000002', name: '試験　二郎', csv: 'farmB.csv' },
 ];
-const USER = 'farmers\\test', PASS = 'secret';
+// JA ごとにアカウントが違い、見える農家も違う（清水町と新得町のように）
+const ACCOUNTS = [
+  { name: '清水町', user: 'farmers\\shimizu', pass: 'secret1', farms: ['00000001'] },
+  { name: '新得町', user: 'farmers\\shintoku', pass: 'secret2', farms: ['00000002'] },
+];
 const log = { signIns: 0, viaPortal: 0, directHit: 0 };
 const ALL = ['経産牛', '未経産牛', '搾乳牛', '乾乳牛', '素牛', '肥育牛', '初生', '預かっている牛', '預けている牛'];
 let base = '';
@@ -37,9 +41,10 @@ const server = http.createServer((req, res) => {
     if (req.method === 'POST') {
       let b = ''; req.on('data', (c) => (b += c)); req.on('end', () => {
         const p = new URLSearchParams(b);
-        if (p.get('UserName') === USER && p.get('Password') === PASS) {
+        const ai = ACCOUNTS.findIndex((a) => a.user === p.get('UserName') && a.pass === p.get('Password'));
+        if (ai >= 0) {
           log.signIns++;
-          res.writeHead(302, { 'set-cookie': 'auth=1; path=/', location: p.get('back') || '/Portal/' });
+          res.writeHead(302, { 'set-cookie': `auth=${ai + 1}; path=/`, location: p.get('back') || '/Portal/' });
           res.end();
         } else send(`<form method=post><span id=errorText>ユーザーIDまたはパスワードが違います</span>
           <input id=userNameInput name=UserName><input id=passwordInput name=Password type=password><span id=submitButton onclick="this.closest('form').submit()">サインイン</span></form>`);
@@ -51,7 +56,8 @@ const server = http.createServer((req, res) => {
       <input id=userNameInput name=UserName><input id=passwordInput name=Password type=password>
       <span id=submitButton role=button onclick="this.closest('form').submit()">サインイン</span></form>`);
   }
-  if (cookie(req, 'auth') !== '1') {
+  const acc = ACCOUNTS[(+cookie(req, 'auth') || 0) - 1];
+  if (!acc) {
     res.writeHead(302, { location: '/adfs/ls?back=' + encodeURIComponent(req.url) });
     return res.end();
   }
@@ -70,7 +76,7 @@ const server = http.createServer((req, res) => {
     return send('<p>セッションが切れました。ポータルからやり直してください。</p>');
   }
   if (u.pathname === '/SeisanPC/DZL99') {
-    const rows = FARMS.map((f) => `<tr data-code="${f.code}"><td><input name="radioSelect" type="radio" value="${f.code}" style="display:none"><span class="radio"></span></td><td>${f.name}</td><td>${f.code}</td></tr>`).join('');
+    const rows = FARMS.filter((f) => acc.farms.includes(f.code)).map((f) => `<tr data-code="${f.code}"><td><input name="radioSelect" type="radio" value="${f.code}" style="display:none"><span class="radio"></span></td><td>${f.name}</td><td>${f.code}</td></tr>`).join('');
     return send(`<span>JA</span><span>生産者コード</span><input class="SEISANCODE is-number is-integer" data-name="生産者コード" maxlength="8" name="SEISANCODE" type="tel">
       <a class="jsSearchUser btn search-btn icon-reload" tabindex="0">この条件で表示</a>
       <table><tr><th></th><th>生産者名</th><th>生産者コード</th></tr>${rows}</table>
@@ -146,8 +152,9 @@ Object.assign(process.env, {
   TAF_PORTAL_URL: base + '/Portal/',
   TAF_RAKUCHIKU_URL: base + '/SeisanPC/',
   TAF_CONFIG: cfgFile,
-  TAF_USER: USER,
-  TAF_PASS: PASS,
+  TAF_ENV: path.join(OUT, 'no.env'), // 手元の .env は読まない
+  TAF_NAME_1: ACCOUNTS[0].name, TAF_USER_1: ACCOUNTS[0].user, TAF_PASS_1: ACCOUNTS[0].pass,
+  TAF_NAME_2: ACCOUNTS[1].name, TAF_USER_2: ACCOUNTS[1].user, TAF_PASS_2: ACCOUNTS[1].pass,
 });
 if (fs.existsSync('/opt/pw-browsers/chromium')) process.env.TAF_BROWSER_PATH ||= '/opt/pw-browsers/chromium';
 
@@ -162,9 +169,9 @@ const failed = await run();
 const save = path.join(OUT, 'save');
 const r = {};
 r['取れなかったものがない'] = failed.length === 0;
-r['サインインは1回だけ'] = log.signIns === 1;
+r['アカウントごとにサインインは1回ずつ'] = log.signIns === 2;
 r['全農家のフォルダができた'] = FARMS.every((f) => fs.existsSync(path.join(save, `${f.code}_${f.name.replace(/\s+/g, ' ')}`, '牛一覧_最新.csv')));
-r['ポータルを通って入った'] = log.viaPortal === 1 && log.directHit === 0;
+r['ポータルを通って入った'] = log.viaPortal === 2 && log.directHit === 0;
 const rowsOf = (f) => fs.readFileSync(path.join(save, `${f.code}_${f.name.replace(/\s+/g, ' ')}`, '牛一覧_最新.csv'), 'latin1').split('\r\n').filter(Boolean).length - 1;
 r['未経産だけに絞られていても全頭取れた'] = rowsOf(FARMS[0]) === 3 && rowsOf(FARMS[1]) === 1;
 r['検索の画面ができた'] = fs.existsSync(path.join(save, '牛検索.html'));

@@ -237,9 +237,12 @@ async function checkAllFilters(page) {
     };
     const on = [];
     let n = 0;
+    const seen = new Set();
     for (const el of els) {
       const t = labelOf(el);
-      if (!names.includes(t)) continue;
+      // 同じ名前のチェックが「さらに絞り込み」にもある。上の「絞り込み」の分（最初に出てくる方）だけ触る
+      if (!names.includes(t) || seen.has(t)) continue;
+      seen.add(t);
       n++;
       if (!el.checked) { el.click(); on.push(t); }
     }
@@ -258,6 +261,56 @@ async function checkAllFilters(page) {
   }
 }
 
+// 「表示中リストCSV出力」を押して、届いたCSVを file に保存する。
+// CSV は押すと裏で POST（DNL00/CsvOutput）が飛んで届く作り。届き方が
+//  ・その画面のダウンロード ・別のタブでのダウンロード ・POST の返事そのもの
+// のどれでも受け取れるよう、3つを同時に待って最初に来たものを使う。
+async function fetchCsv(page, file) {
+  const context = page.context();
+  let done = false;
+  let cleanup = () => {};
+  const viaDownload = new Promise((resolve) => {
+    const onDl = (d) => { if (!done) resolve({ kind: 'download', d }); };
+    const watch = (p) => p.on('download', onDl);
+    context.pages().forEach(watch);
+    context.on('page', watch);
+    cleanup = () => { context.off('page', watch); context.pages().forEach((p) => p.off('download', onDl)); };
+  });
+  const viaResponse = page.waitForResponse((r) => /CsvOutput/i.test(r.url()) && r.request().method() === 'POST', { timeout: WAIT * 2 })
+    .then(async (r) => ({ kind: 'response', r, body: await r.body().catch(() => null) }))
+    .catch(() => null);
+
+  // 押す場所がずれて牛の行を押さないよう、座標で押さずに要素へ直接クリックを送る。
+  // 見えている a.csv-output（なければ文字で探す）を使う。
+  const links = page.locator('a.csv-output');
+  let clicked = false;
+  for (let i = 0; i < (await links.count()); i++) {
+    const a = links.nth(i);
+    if (await a.isVisible().catch(() => false)) { await a.evaluate((el) => el.click()); clicked = true; break; }
+  }
+  if (!clicked && (await links.count())) { await links.first().evaluate((el) => el.click()); clicked = true; }
+  if (!clicked) await clickByText(page, ['表示中リストCSV出力']);
+
+  const timeout = new Promise((resolve) => setTimeout(() => resolve(null), WAIT * 2));
+  // POST の返事が先に来ても、ダウンロードとして届くならそちらを優先したいので少しだけ待つ
+  let got = await Promise.race([viaDownload, viaResponse.then((x) => x && new Promise((r) => setTimeout(() => r(x), 3000))), timeout]);
+  done = true;
+  cleanup();
+  if (!got) throw new Error('「表示中リストCSV出力」を押しても CSV が届きませんでした');
+
+  if (got.kind === 'download') {
+    await got.d.saveAs(file);
+    return;
+  }
+  // POST の返事を直接保存する。中身が牛一覧（見出しに「耳標ID」）か確かめる
+  const body = got.body;
+  const text = body ? new TextDecoder('shift_jis').decode(body.subarray(0, 400)) : '';
+  if (!body || !text.includes('耳標ID')) {
+    throw new Error(`CSV の返事が牛一覧ではありませんでした（${got.r.status()} ${got.r.headers()['content-type'] || ''}）`);
+  }
+  fs.writeFileSync(file, body);
+}
+
 async function downloadCowList(page, farm, outRoot) {
   // 上のメニューの「牛一覧」（/SeisanPC/DNL00）
   const menu = page.locator('a[href$="/SeisanPC/DNL00"], a[href="DNL00"]').first();
@@ -268,18 +321,10 @@ async function downloadCowList(page, farm, outRoot) {
 
   await checkAllFilters(page);
 
-  // CSV はリンクを開くのではなく、押すと裏で POST が飛んでファイルが届く作り。
-  // 押す場所がずれて牛の行を押さないよう、座標ではなく a.csv-output を直接押す。
-  const dl = page.waitForEvent('download', { timeout: WAIT * 2 });
-  const btn = page.locator('a.csv-output').first();
-  if (await btn.count()) await btn.click();
-  else await clickByText(page, ['表示中リストCSV出力']);
-  const file = await dl;
-
   const dir = path.join(outRoot, safeName(`${farm['生産者コード']}_${farm['名前'] || ''}`));
   fs.mkdirSync(dir, { recursive: true });
   const dated = path.join(dir, `牛一覧_${today()}.csv`);
-  await file.saveAs(dated);
+  await fetchCsv(page, dated);
 
   const size = fs.statSync(dated).size;
   if (size < 50) throw new Error(`取れたCSVが空に近い（${size} バイト）。画面の作りが変わったかもしれません。`);

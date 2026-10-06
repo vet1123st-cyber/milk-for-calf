@@ -102,11 +102,14 @@ const server = http.createServer((req, res) => {
     // 絞り込みは前回の状態が残る。はじめは「未経産牛」だけ（拡張機能で見たときと同じ状態）
     const flt = decodeURIComponent(cookie(req, 'flt') || '未経産牛').split(',');
     const boxes = ALL.map((n) => `<label class="check"><input type="checkbox" name="flt" value="${n}" style="display:none" ${flt.includes(n) ? 'checked' : ''}><span class="box"></span>${n}</label>`).join('');
-    return send(`<h2>在籍牛一覧</h2><div class="filter">${boxes}</div>
+    // 「さらに絞り込み」にも同じ名前のチェックがある。こちらを入れると牛が減る（触ってはいけない）
+    const more = ['搾乳牛', '乾乳牛'].map((n) => `<label class="check"><input type="checkbox" name="more" value="${n}" style="display:none"><span class="box"></span>${n}</label>`).join('');
+    return send(`<h2>在籍牛一覧</h2><div class="filter">${boxes}</div><div class="more">${more}</div>
       <button type="button" id="show">この条件で表示</button><span id="cnt"></span>
       <div class="flex-row-space"><a class="arrow-link csv-output" href="DNL00/CsvOutput">表示中リストCSV出力</a></div>
       <script>
-        const sel = () => [...document.querySelectorAll('[name=flt]:checked')].map((e) => e.value).join(',');
+        const sel = () => [...document.querySelectorAll('[name=flt]:checked')].map((e) => e.value).join(',')
+          + ([...document.querySelectorAll('[name=more]:checked')].length ? ',MORE' : '');
         document.getElementById('show').onclick = async () => {
           const r = await fetch('/SeisanPC/DNL00/GetList', { method: 'POST', body: sel() });
           document.getElementById('cnt').textContent = await r.text();
@@ -115,6 +118,8 @@ const server = http.createServer((req, res) => {
         document.querySelector('a.csv-output').onclick = (e) => {
           e.preventDefault();
           const f = document.createElement('form'); f.method = 'post'; f.action = 'DNL00/CsvOutput';
+          // 農家によっては別のタブで届く（本物でどちらか分からないので両方確かめる）
+          if (document.cookie.includes('farm=00000002')) f.target = '_blank';
           document.body.appendChild(f); f.submit();
         };
       </script>`);
@@ -131,7 +136,9 @@ const server = http.createServer((req, res) => {
     const f = FARMS.find((x) => x.code === cookie(req, 'farm'));
     const flt = decodeURIComponent(cookie(req, 'flt') || '未経産牛').split(',');
     let buf = fs.readFileSync(path.join(HERE, 'fixtures', f.csv));
-    if (!ALL.every((n) => flt.includes(n))) {
+    if (flt.includes('MORE')) {
+      buf = Buffer.from(buf.toString('latin1').split('\r\n')[0] + '\r\n', 'latin1');
+    } else if (!ALL.every((n) => flt.includes(n))) {
       // 絞り込みが全部でなければ、見出しと未経産（産次が「-」）の行だけ返す
       const lines = buf.toString('latin1').split('\r\n');
       buf = Buffer.from(lines.filter((l, i) => i === 0 || l.split(',')[6] === '-').join('\r\n') + '\r\n', 'latin1');

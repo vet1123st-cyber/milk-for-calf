@@ -154,7 +154,9 @@ Object.assign(process.env, {
   TAF_CONFIG: cfgFile,
   TAF_ENV: path.join(OUT, 'no.env'), // 手元の .env は読まない
   TAF_NAME_1: ACCOUNTS[0].name, TAF_USER_1: ACCOUNTS[0].user, TAF_PASS_1: ACCOUNTS[0].pass,
-  TAF_NAME_2: ACCOUNTS[1].name, TAF_USER_2: ACCOUNTS[1].user, TAF_PASS_2: ACCOUNTS[1].pass,
+  TAF_NAME_2: ACCOUNTS[1].name, TAF_PASS_2: ACCOUNTS[1].pass,
+  // 日本語入力のまま打った全角の円記号でも通ること
+  TAF_USER_2: ACCOUNTS[1].user.replace('\\', '￥'),
 });
 if (fs.existsSync('/opt/pw-browsers/chromium')) process.env.TAF_BROWSER_PATH ||= '/opt/pw-browsers/chromium';
 

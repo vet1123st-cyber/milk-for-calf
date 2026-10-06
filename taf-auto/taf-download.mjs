@@ -43,6 +43,13 @@ function readAccounts() {
     .sort((x, y) => x - y);
   for (const n of nums) accounts.push({ name: env[`TAF_NAME_${n}`] || `アカウント${n}`, user: env[`TAF_USER_${n}`], pass: env[`TAF_PASS_${n}`] });
 
+  // メモ帳で日本語入力のまま打つと「farmers￥…」のように全角や円記号になることがある。
+  // TAF には半角の「\」で送らないと通らないので、ID は半角にそろえて円記号を「\」に直す。
+  // パスワードは記号も意味を持つので、前後の空白を除くだけにする。
+  for (const a of accounts) {
+    if (a.user) a.user = a.user.normalize('NFKC').replace(/[\u00A5\uFFE5]/g, '\\').trim();
+    if (a.pass) a.pass = a.pass.trim();
+  }
   const usable = accounts.filter((a) => a.user || a.pass);
   if (!usable.length) throw new Error('.env に TAF の ID とパスワード（TAF_USER_1 と TAF_PASS_1）を書いてください。');
   for (const a of usable) {
@@ -291,6 +298,7 @@ export async function run() {
   const accounts = readAccounts();
 
   const outRoot = cfg['保存先フォルダ'];
+  fs.mkdirSync(outRoot, { recursive: true });
   fs.mkdirSync(path.join(HERE, 'logs'), { recursive: true });
   logFile = path.join(HERE, 'logs', `${today()}.log`);
 
@@ -305,6 +313,8 @@ export async function run() {
       // アカウントごとにまっさらな窓で入る（前のアカウントのサインインが残らないように）
       const title = acc.name || acc.user;
       log(`=== ${title} ===`);
+      // どのIDで入ろうとしたかを残す（パスワードは文字数だけ。中身は書かない）
+      log(`ID: ${acc.user}（パスワード ${acc.pass.length} 文字）`);
       const context = await browser.newContext({ acceptDownloads: true, locale: 'ja-JP' });
       let page = await context.newPage();
       try {

@@ -23,10 +23,12 @@ const FARMS = [
   { code: '00000003', name: '試験　三郎', csv: 'farmC.csv', home: 'DLL70' },
   // 見る権限がない農家（取らない農家に入れておく）
   { code: '00000004', name: '権限　なし', csv: null },
+  // 牛一覧からCSVを出せないが、農場状況の「経産牛」「未経産牛」の数字から一覧が見られる農家
+  { code: '00000005', name: '画面　だけ', csv: null, screen: true },
 ];
 // JA ごとにアカウントが違い、見える農家も違う（清水町と新得町のように）
 const ACCOUNTS = [
-  { name: '清水町', user: 'farmers\\shimizu', pass: 'secret1', farms: ['00000001', '00000003', '00000004'] },
+  { name: '清水町', user: 'farmers\\shimizu', pass: 'secret1', farms: ['00000001', '00000003', '00000004', '00000005'] },
   { name: '新得町', user: 'farmers\\shintoku', pass: 'secret2', farms: ['00000002'] },
 ];
 const log = { signIns: 0, viaPortal: 0, directHit: 0 };
@@ -119,10 +121,34 @@ const server = http.createServer((req, res) => {
     res.setHeader('set-cookie', 'farm=' + u.searchParams.get('farm') + '; path=/');
     return send(`<p>別のホーム画面：${u.searchParams.get('farm')}</p>`);
   }
+  // ---- 画面だけの農家（00000005）----
+  const SCREEN_HEAD = ['耳標ID', '生年月日', '名号', '品種', '産次', '最新分娩日'];
+  const SCREEN_COWS = {
+    // 経産牛は1ページ1頭で「次へ」がある。1頭目は行の中に10桁が隠れている。2頭目は画面に出ている5桁しか分からない
+    keisan: [['7777712343', '2020/01/01', 'ｶﾞﾒﾝ ｲﾁ', 'ホルス', '2', '2026/05/01', true], ['7777756785', '2021/02/02', 'ｶﾞﾒﾝ ﾆ', 'ホルス', '1', '2026/06/01', false]],
+    mikei: [['7777790127', '2025/03/03', 'ｶﾞﾒﾝ ｻﾝ', 'ホルス', '-', '', true]],
+  };
+  if (u.pathname === '/SeisanPC/DLL60' && cookie(req, 'farm') === '00000005' && !u.searchParams.get('farm')) {
+    return send(`<nav id="menu"><a href="/SeisanPC/DLL60">農場状況</a></nav>
+      <div class="box"><p>経産牛</p><a href="/SeisanPC/DKL10?k=keisan&p=0">${SCREEN_COWS.keisan.length}</a></div>
+      <div class="box"><p>未経産牛</p><a href="/SeisanPC/DKL10?k=mikei&p=0">${SCREEN_COWS.mikei.length}</a></div>`);
+  }
+  if (u.pathname === '/SeisanPC/DKL10') {
+    const list = SCREEN_COWS[u.searchParams.get('k')], pg = +u.searchParams.get('p');
+    const per = 1, part = list.slice(pg * per, pg * per + per);
+    const tr = part.map((c) => `<tr>${c.slice(0, 6).map((v, i) => i === 0
+      ? `<td>${c[6] ? `<input type="hidden" value="${v}">` : ''}<span class="big">${v.slice(5, 9)}</span> ${v.slice(9)}</td>`
+      : `<td>${v}</td>`).join('')}</tr>`).join('');
+    const next = (pg + 1) * per < list.length ? `<a href="/SeisanPC/DKL10?k=${u.searchParams.get('k')}&p=${pg + 1}">次へ</a>` : '';
+    return send(`<table><thead><tr>${SCREEN_HEAD.map((h) => `<th>${h}</th>`).join('')}</tr></thead><tbody>${tr}</tbody></table>${next}`);
+  }
   if (u.pathname === '/SeisanPC/DLL60') {
     res.setHeader('set-cookie', 'farm=' + u.searchParams.get('farm') + '; path=/');
     return send(`<nav id="menu"><ul class="dropdown"><li><a href="/SeisanPC/DLL60">農場状況</a></li><li><a href="/SeisanPC/DNL00"><svg width="10" height="10"></svg><span>牛一覧</span></a></li></ul></nav>
       <p>農場名：${u.searchParams.get('farm')}</p><div class="flex-row-space"><a class="arrow-link csv-output" href="DLL60/CsvOutput">表示中リストCSV出力</a></div>`);
+  }
+  if (u.pathname === '/SeisanPC/DNL00' && cookie(req, 'farm') === '00000005') {
+    return send('<h2>在籍牛一覧</h2><p>この農家の牛一覧は表示できません</p>');
   }
   if (u.pathname === '/SeisanPC/DNL00') {
     // 絞り込みは前回の状態が残る。はじめは「未経産牛」だけ（拡張機能で見たときと同じ状態）
@@ -206,6 +232,10 @@ const r = {};
 r['取れなかったものがない'] = failed.length === 0;
 r['アカウントごとにサインインは1回ずつ'] = log.signIns === 2;
 r['スクロールしないと出ない農家・ホームが違う農家も取れた'] = fs.existsSync(path.join(save, '00000003_試験 三郎', '牛一覧_最新.csv'));
+const scr = path.join(save, '00000005_画面 だけ', '牛一覧_最新.csv');
+const scrText = fs.existsSync(scr) ? fs.readFileSync(scr, 'utf8') : '';
+r['CSVを出せない農家は画面から全頭読んだ'] = scrText.charCodeAt(0) === 0xfeff && scrText.trim().split('\r\n').length === 4;
+r['画面の10桁が隠れていれば10桁で保存'] = scrText.includes('7777712343') && scrText.includes('7777790127');
 r['取らない農家は取りに行かない'] = !fs.readdirSync(save).some((n) => n.startsWith('00000004'));
 r['全農家のフォルダができた'] = FARMS.filter((f) => f.csv).every((f) => fs.existsSync(path.join(save, `${f.code}_${f.name.replace(/\s+/g, ' ')}`, '牛一覧_最新.csv')));
 r['ポータルを通って入った'] = log.viaPortal === 2 && log.directHit === 0;
@@ -240,6 +270,10 @@ await p.fill('#q', '07226');
 r['5桁（最後の1桁つき）で絞れる'] = (await p.locator('.cow').count()) === 1;
 await p.fill('#q', 'ベツノ');
 r['名号の一部でも探せる'] = (await p.locator('.cow').count()) === 1;
+await p.fill('#q', '1234');
+r['画面から読んだ牛も4桁で引ける'] = (await p.locator('.cow .farm').innerText().catch(() => '')) === '画面 だけ';
+await p.fill('#q', '5678');
+r['5桁しか分からない牛も4桁で引ける'] = (await p.locator('.cow .name').innerText().catch(() => '')) === 'ガメン ニ';
 await p.fill('#q', '9999');
 r['ない番号は「見つかりません」'] = (await p.locator('.empty').innerText()).includes('見つかりません');
 await browser.close();

@@ -19,7 +19,7 @@ const PORTAL = process.env.TAF_PORTAL_URL || 'https://www.jatokachi.jp/Portal/';
 const RAKUCHIKU = process.env.TAF_RAKUCHIKU_URL || 'https://rakuchiku.jatokachi.jp/SeisanPC/';
 
 // 版。差し替えたつもりで古いファイルが残っていても、黒い画面の最初の行で見分けられるようにする
-const VERSION = '2026-10-06 版7（全農家・ホーム違い・取らない農家）';
+const VERSION = '2026-10-10 版8（CSVを出せない農家は画面から読む）';
 
 const WAIT = 30_000; // サイトが重い朝もあるので、1つの操作に30秒までは待つ
 
@@ -360,21 +360,151 @@ async function downloadCowList(page, farm, outRoot) {
   }
   await page.waitForLoadState('networkidle').catch(() => {});
 
-  await checkAllFilters(page);
-
   const dir = path.join(outRoot, safeName(`${farm['生産者コード']}_${farm['名前'] || ''}`));
   fs.mkdirSync(dir, { recursive: true });
   const dated = path.join(dir, `牛一覧_${today()}.csv`);
-  await fetchCsv(page, dated);
+
+  if (await page.locator('a.csv-output').count()) {
+    await checkAllFilters(page);
+    await fetchCsv(page, dated);
+  } else {
+    // 牛一覧からCSVを出せない農家（権限が限られている農家など）は、
+    // 農場状況の「経産牛」「未経産牛」の数字から開く一覧を、画面から読み取って保存する
+    log('  牛一覧からCSVを出せないので、農場状況の一覧を画面から読み取ります');
+    await scrapeFromFarmStatus(page, farm, dated);
+  }
 
   const size = fs.statSync(dated).size;
   if (size < 50) throw new Error(`取れたCSVが空に近い（${size} バイト）。画面の作りが変わったかもしれません。`);
   // 他のアプリやエクセルからは、いつも同じ名前で最新を開けるようにしておく
   fs.copyFileSync(dated, path.join(dir, '牛一覧_最新.csv'));
 
-  const rows = fs.readFileSync(dated).toString('latin1').split(/\r?\n/).filter(Boolean).length - 1;
+  const rows = fs.readFileSync(dated).toString('latin1').split(/\r?\n/).filter((l) => l.trim()).length - 1;
   log(`  保存しました: ${dated}（${rows} 頭）`);
   return dated;
+}
+
+// ---------- 画面から読み取る（CSVを出せない農家） ----------
+
+// 農場状況の画面を開く。DLL60 で「経産牛」が見えなければ、上のメニューの「農場状況」を押す
+async function openFarmStatus(page) {
+  await page.goto(RAKUCHIKU + 'DLL60', { waitUntil: 'domcontentloaded' });
+  await page.waitForLoadState('networkidle').catch(() => {});
+  if (await page.getByText('経産牛', { exact: true }).count()) return;
+  await clickByText(page, ['農場状況']);
+  await page.waitForLoadState('networkidle').catch(() => {});
+  await page.getByText('経産牛', { exact: true }).first().waitFor({ timeout: WAIT });
+}
+
+// 「経産牛」の文字の近くにある数字（押すと一覧が開く）に印を付けて、その数を返す
+async function markCountLink(page, label) {
+  return page.evaluate((label) => {
+    document.querySelectorAll('[data-taf-pick]').forEach((e) => e.removeAttribute('data-taf-pick'));
+    const own = (el) => [...el.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join('').trim();
+    const labels = [...document.querySelectorAll('body *')].filter((el) => own(el) === label || (el.children.length === 0 && el.textContent.trim() === label));
+    for (const lb of labels) {
+      // ラベルから外側へ3段まで広げて、その中にある「数字だけ」の要素を探す
+      let box = lb;
+      for (let up = 0; up < 4 && box; up++, box = box.parentElement) {
+        const nums = [...box.querySelectorAll('a, button, [onclick], span, div, td, p')]
+          .filter((e) => /^\d+$/.test(e.textContent.trim()) && !e.querySelector('a, button'));
+        if (nums.length) {
+          // 押せそうなもの（リンク・ボタン・onclick付き）を優先
+          const pick = nums.find((e) => e.closest('a, button, [onclick]')) || nums[0];
+          const target = pick.closest('a, button, [onclick]') || pick;
+          target.setAttribute('data-taf-pick', '1');
+          return +pick.textContent.trim();
+        }
+      }
+    }
+    return null;
+  }, label);
+}
+
+// いま開いている一覧の表を読み取る。下までスクロールして続きを読み込み、「次へ」があればたどる
+async function readListTable(page) {
+  const out = { header: null, rows: [] };
+  for (let pageNo = 0; pageNo < 50; pageNo++) {
+    // 続きの読み込み（行が増えなくなるまで下へ送る）
+    let last = -1;
+    for (let i = 0; i < 30; i++) {
+      const n = await page.locator('tbody tr, table tr').count();
+      if (n === last) break;
+      last = n;
+      await page.evaluate(() => {
+        window.scrollTo(0, document.body.scrollHeight);
+        document.querySelectorAll('*').forEach((el) => { if (el.scrollHeight > el.clientHeight + 5 && getComputedStyle(el).overflowY !== 'visible') el.scrollTop = el.scrollHeight; });
+      });
+      await page.waitForTimeout(800);
+    }
+    const t = await page.evaluate(() => {
+      // 見出しに「耳標」が入っている表のうち、いちばん行の多いものを使う
+      const tables = [...document.querySelectorAll('table')].map((tb) => {
+        const head = [...(tb.querySelector('thead tr') || tb.querySelector('tr') || { children: [] }).children].map((c) => c.innerText.trim());
+        const body = [...tb.querySelectorAll('tbody tr')].filter((tr) => tr.querySelector('td'));
+        return { tb, head, body };
+      }).filter((x) => x.head.some((h) => /耳標|個体識別/.test(h)));
+      if (!tables.length) return null;
+      tables.sort((a, b) => b.body.length - a.body.length);
+      const { head, body } = tables[0];
+      const idCol = head.findIndex((h) => /耳標|個体識別/.test(h));
+      const rows = body.map((tr) => {
+        const cells = [...tr.querySelectorAll('td')].map((td) => td.innerText.replace(/\s+/g, ' ').trim());
+        // 画面の耳標は「0722 6」のように一部しか出ないことがある。行の中に10桁の番号が隠れていればそれを使う
+        const shown = (cells[idCol] || '').replace(/\D/g, '');
+        const hidden = (tr.outerHTML.match(/\b\d{10}\b/g) || []).find((d) => shown && d.endsWith(shown));
+        if (hidden) cells[idCol] = hidden;
+        else cells[idCol] = shown;
+        return cells;
+      });
+      return { head, rows };
+    });
+    if (!t) break;
+    out.header = out.header || t.head;
+    out.rows.push(...t.rows);
+    const next = page.locator('a, button').filter({ hasText: /^(次へ|次のページ|＞|>)$/ }).first();
+    if (!(await next.isVisible().catch(() => false))) break;
+    await next.click();
+    await page.waitForLoadState('networkidle').catch(() => {});
+  }
+  return out;
+}
+
+// CSV と同じ並び（見出し＋行）で書き出す。画面から読んだ分は UTF-8（印付き）で保存する。
+function writeCsv(file, header, rows) {
+  const cell = (v) => (/[",\r\n]/.test(v) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v));
+  const text = [header, ...rows].map((r) => r.map(cell).join(',')).join('\r\n') + '\r\n';
+  fs.writeFileSync(file, '﻿' + text, 'utf8');
+}
+
+async function scrapeFromFarmStatus(page, farm, file) {
+  let header = null;
+  const byId = new Map();
+  const counts = [];
+  for (const label of ['経産牛', '未経産牛']) {
+    await openFarmStatus(page);
+    const n = await markCountLink(page, label);
+    if (n === null) { log(`  ⚠ 農場状況に「${label}」の数字が見つかりません`); continue; }
+    if (n === 0) { counts.push(`${label} 0`); continue; }
+    const popup = page.context().waitForEvent('page', { timeout: 5000 }).catch(() => null);
+    await page.locator('[data-taf-pick]').first().click();
+    const p = (await popup) || page;
+    await p.waitForLoadState('networkidle').catch(() => {});
+    await p.waitForTimeout(1000);
+    const t = await readListTable(p);
+    if (p !== page) await p.close();
+    if (!t.header) { await keepEvidence(page, `${farm['生産者コード']}_${label}の一覧`); throw new Error(`「${label}」の一覧の表が読めませんでした`); }
+    header = header || t.header;
+    const idCol = header.findIndex((h) => /耳標|個体識別/.test(h));
+    for (const r of t.rows) byId.set(r[idCol] || JSON.stringify(r), r);
+    counts.push(`${label} ${t.rows.length}/${n}`);
+    if (t.rows.length !== n) log(`  ⚠ ${label}は ${n} 頭のはずが ${t.rows.length} 頭しか読めませんでした`);
+  }
+  if (!header || !byId.size) throw new Error('農場状況から牛の一覧を読み取れませんでした');
+  // 見出しは他の農家のCSVと同じ名前にそろえる（牛検索で同じ欄に出るように）
+  const fixed = header.map((h) => (/耳標|個体識別/.test(h) ? '耳標ID' : h.replace(/\s+/g, '')));
+  writeCsv(file, fixed, [...byId.values()]);
+  log(`  画面から読み取りました（${counts.join('・')}）`);
 }
 
 // ---------- 全体の流れ ----------

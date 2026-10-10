@@ -87,10 +87,12 @@ function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){retu
 function digits(s){ return String(s||'').replace(/\D/g,''); }
 
 // 画面に出ている牛番号（例「0722 6」）は、耳標ID10桁の6〜9桁目と最後の1桁
-function key4(id){ id=digits(id); return id.length===10? id.slice(5,9) : ''; }
+// 画面から読み取った農家は「07226」（4桁＋最後の1桁）しか分からないことがある
+function key4(id){ id=digits(id); return id.length===10? id.slice(5,9) : (id.length===5? id.slice(0,4) : ''); }
 
 function earHTML(id){
   id=digits(id);
+  if(id.length===5) return '<span class="key">'+id.slice(0,4)+'</span> <span class="dim">'+id.slice(4)+'</span>';
   if(id.length!==10) return esc(id||'（耳標なし）');
   return '<span class="dim">'+id.slice(0,5)+'</span> <span class="key">'+id.slice(5,9)+'</span> <span class="dim">'+id.slice(9)+'</span>';
 }
@@ -204,7 +206,7 @@ function search(){
     var ok;
     if(d && d===q){
       if(d.length===4) ok = key4(id)===d;                 // 牛番号の4桁
-      else if(d.length===5) ok = id.slice(5)===d;         // 4桁＋最後の1桁
+      else if(d.length===5) ok = id.slice(-5)===d;        // 4桁＋最後の1桁
       else ok = id.indexOf(d)>=0;                          // 10桁や、その一部
     }else{
       ok = String(c['名号']||'').indexOf(q)>=0 || String(c['登録番号']||'').indexOf(q)>=0;
@@ -250,7 +252,8 @@ function loadFiles(files){
   Promise.all(files.map(function(f){ return f.arrayBuffer().then(function(b){ return {f:f,b:b}; }); })).then(function(list){
     var farms=[],cows=[],header=null;
     list.forEach(function(x){
-      var text=new TextDecoder('shift_jis').decode(x.b);
+      var u8=new Uint8Array(x.b), bom=u8[0]===0xEF&&u8[1]===0xBB&&u8[2]===0xBF;
+      var text=bom? new TextDecoder('utf-8').decode(u8.subarray(3)) : new TextDecoder('shift_jis').decode(x.b);
       var rows=text.split(/\r?\n/).filter(function(l){ return l.trim(); }).map(splitCsvLine);
       if(rows.length<1) return;
       var h=rows[0].map(function(s){ return s.trim(); });

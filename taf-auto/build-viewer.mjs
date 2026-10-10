@@ -14,7 +14,10 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 // TAF の CSV は Shift_JIS。名号は半角カナなので、読みやすいよう全角に直す（NFKC）。
 function readCsv(file) {
-  const text = new TextDecoder('shift_jis').decode(fs.readFileSync(file));
+  // TAF から落とした CSV は Shift_JIS。画面から読み取って作った CSV は UTF-8（先頭に印 EF BB BF）
+  const buf = fs.readFileSync(file);
+  const utf8 = buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf;
+  const text = utf8 ? buf.subarray(3).toString('utf8') : new TextDecoder('shift_jis').decode(buf);
   const rows = [];
   for (const line of text.split(/\r?\n/)) {
     if (!line.trim()) continue;

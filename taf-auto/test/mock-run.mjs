@@ -98,9 +98,11 @@ const server = http.createServer((req, res) => {
         const rest = ${rest}, homes = ${homes};
         const wire = () => document.querySelectorAll('span.radio').forEach((sp) => sp.onclick = () => sp.previousElementSibling.click());
         window.addEventListener('scroll', () => {
-          if (rest.length && window.scrollY + innerHeight >= document.body.scrollHeight - 50) {
-            const more = rest.splice(0);
-            setTimeout(() => { document.getElementById('t').insertAdjacentHTML('beforeend', more.join('')); wire(); }, 500);
+          // 重い日を再現：1回に1戸ずつ、3秒たってから出てくる
+          if (rest.length && !window.loading && window.scrollY + innerHeight >= document.body.scrollHeight - 50) {
+            window.loading = true;
+            const more = rest.splice(0, 1);
+            setTimeout(() => { document.getElementById('t').insertAdjacentHTML('beforeend', more.join('')); wire(); window.loading = false; }, 3000);
           }
         });
         document.querySelector('.jsSearchUser').onclick = () => {

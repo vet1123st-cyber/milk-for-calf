@@ -19,7 +19,7 @@ const PORTAL = process.env.TAF_PORTAL_URL || 'https://www.jatokachi.jp/Portal/';
 const RAKUCHIKU = process.env.TAF_RAKUCHIKU_URL || 'https://rakuchiku.jatokachi.jp/SeisanPC/';
 
 // 版。差し替えたつもりで古いファイルが残っていても、黒い画面の最初の行で見分けられるようにする
-const VERSION = '2026-10-10 版8（CSVを出せない農家は画面から読む）';
+const VERSION = '2026-10-10 版9（農家一覧の読み込みを粘る・取りこぼしを知らせる）';
 
 const WAIT = 30_000; // サイトが重い朝もあるので、1つの操作に30秒までは待つ
 
@@ -194,18 +194,19 @@ async function backToFarmSelect(page) {
 // 丸（input name=radioSelect）の value が生産者コードになっている。
 // 農家の一覧は、下までスクロールすると続きが読み込まれる作り（はじめは15戸ほどしか出ない）。
 // 上に出ている「○○ 件」の数になるか、増えなくなるまで下へ送り続ける。
-async function loadAllFarmRows(page) {
+async function loadAllFarmRows(page, { quiet = false } = {}) {
   const radios = page.locator('input[name=radioSelect]');
   await radios.first().waitFor({ state: 'attached', timeout: WAIT });
   const want = await page.getByText(/^\s*\d+\s*件\s*$/).first().innerText({ timeout: 3000 })
     .then((t) => +t.match(/(\d+)/)[1]).catch(() => 0);
   let last = -1, still = 0;
-  for (let i = 0; i < 60; i++) {
+  for (let i = 0; i < 80; i++) {
     const n = await radios.count();
     if (want && n >= want) break;
-    if (n === last) { if (++still >= 4) break; } else still = 0;
+    // サイトが重い日は続きが出るまで時間がかかる。件数に届いていないうちは長めに粘る（約20秒）
+    if (n === last) { if (++still >= (want ? 8 : 4)) break; } else still = 0;
     last = n;
-    // 最後の行を画面に出し、一覧の枠と画面の両方をいちばん下まで送る。マウスも最後の行に置く
+    // 最後の行を画面に出し、一覧の枠と画面の両方をいちばん下まで送る
     await radios.last().evaluate((el) => {
       const row = el.closest('tr') || el;
       row.scrollIntoView({ block: 'end' });
@@ -215,25 +216,45 @@ async function loadAllFarmRows(page) {
       window.scrollTo(0, document.body.scrollHeight);
     }).catch(() => {});
     await page.mouse.wheel(0, 2000).catch(() => {});
-    await radios.last().locator('xpath=ancestor::tr[1]').hover({ force: true, timeout: 2000 }).catch(() => {});
-    await page.waitForTimeout(1500);
+    // 「マウスを置いて数秒すると続きが出る」ので、最後の行の上にマウスを置いて待つ
+    const box = await radios.last().locator('xpath=ancestor::tr[1]').boundingBox().catch(() => null);
+    if (box) await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 5 }).catch(() => {});
+    await page.waitForTimeout(2500);
   }
   const n = await radios.count();
-  if (want && n < want) log(`  ⚠ 農家の一覧は ${want} 件のはずが、${n} 件しか読み込めませんでした`);
-  return n;
+  if (!quiet && want && n < want) log(`  ⚠ 農家の一覧は ${want} 件のはずが、${n} 件しか読み込めませんでした`);
+  return { n, want };
 }
 
-async function listFarms(page) {
-  await backToFarmSelect(page);
-  await loadAllFarmRows(page);
-  const farms = await page.locator('input[name=radioSelect]').evaluateAll((els) => els.map((el) => {
+// 一覧に出ている農家を読み取る（名前と生産者コード）
+async function readFarmRows(page) {
+  return page.locator('input[name=radioSelect]').evaluateAll((els) => els.map((el) => {
     const code = (el.value || '').trim();
     const tr = el.closest('tr');
     const cells = tr ? [...tr.querySelectorAll('td')].map((td) => td.innerText.trim()) : [];
     const name = cells.find((t) => t && t !== code && !/^\d{8}$/.test(t)) || '';
     return { '生産者コード': code, '名前': name.replace(/\s+/g, ' ') };
   }).filter((f) => /^\d+$/.test(f['生産者コード'])));
-  if (!farms.length) throw new Error('農家を選ぶ画面に農家が1戸も見つかりません');
+}
+
+// 農家を選ぶ画面の農家をぜんぶ集める。読み込みが途中で止まる日があるので、
+// 足りなければ画面を開き直して最大3回読み、見つかった農家を足し合わせる。
+async function listFarms(page) {
+  const all = new Map();
+  let want = 0;
+  for (let round = 1; round <= 3; round++) {
+    if (round > 1) await page.goto(RAKUCHIKU + 'DZL99', { waitUntil: 'domcontentloaded' });
+    else await backToFarmSelect(page);
+    const r = await loadAllFarmRows(page, { quiet: true });
+    want = Math.max(want, r.want);
+    for (const f of await readFarmRows(page)) all.set(f['生産者コード'], f);
+    if (!want || all.size >= want) break;
+    log(`  農家の一覧が ${all.size}/${want} 件しか出ないので、読み直します（${round}回目）`);
+  }
+  if (!all.size) throw new Error('農家を選ぶ画面に農家が1戸も見つかりません');
+  const farms = [...all.values()];
+  farms.short = want && farms.length < want ? `${farms.length}/${want}` : '';
+  log(`農家の一覧：${farms.length} 件${want ? `（画面の件数 ${want}）` : ''}`);
   return farms;
 }
 
@@ -242,7 +263,7 @@ async function chooseFarm(page, farm) {
   await backToFarmSelect(page);
   let radio = page.locator(`input[name=radioSelect][value="${code}"]`);
   // 下の方の農家は、スクロールして読み込まないと一覧に出てこない
-  if (!(await radio.count())) await loadAllFarmRows(page);
+  if (!(await radio.count())) await loadAllFarmRows(page, { quiet: true });
   if (!(await radio.count())) {
     // 一覧に見当たらないときは、生産者コードで絞って探し直す
     await page.locator('input[name=SEISANCODE]').fill(code);
@@ -545,6 +566,11 @@ export async function run() {
           .filter((f) => !skip.has(f['生産者コード']));
         const skipped = listed.filter((f) => skip.has(f['生産者コード']));
         if (skipped.length) log(`取らない農家: ${skipped.map((f) => `${f['生産者コード']} ${f['名前']}`).join('、')}`);
+        // 一覧を全部読めなかったら、最後に「取りこぼし」として知らせる（ぜんぶ取れた、とは言わない）
+        if (listed.short) {
+          log(`  ⚠ 農家の一覧を全部読めませんでした（${listed.short}）。読めた分だけ取ります`);
+          failed.push(`${title} の農家一覧（${listed.short} 件しか読めず）`);
+        }
         log(`はじめます（${farms.length} 戸）`);
         for (const farm of farms) {
           const label = `${farm['生産者コード']} ${farm['名前'] || ''}`.trim();

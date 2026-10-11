@@ -123,26 +123,44 @@ const server = http.createServer((req, res) => {
     res.setHeader('set-cookie', 'farm=' + u.searchParams.get('farm') + '; path=/');
     return send(`<p>別のホーム画面：${u.searchParams.get('farm')}</p>`);
   }
-  // ---- 画面だけの農家（00000005）----
-  const SCREEN_HEAD = ['耳標ID', '生年月日', '名号', '品種', '産次', '最新分娩日'];
+  // ---- 画面だけの農家（00000005）：本物の農場状況（DKL40）と牛の一覧（DNL02）に似せる ----
+  const SCREEN_HEAD = ['登録番号', '生年月日', '名号', '品種', '産次', '最新分娩日'];
   const SCREEN_COWS = {
-    // 経産牛は1ページ1頭で「次へ」がある。1頭目は行の中に10桁が隠れている。2頭目は画面に出ている5桁しか分からない
-    keisan: [['7777712343', '2020/01/01', 'ｶﾞﾒﾝ ｲﾁ', 'ホルス', '2', '2026/05/01', true], ['7777756785', '2021/02/02', 'ｶﾞﾒﾝ ﾆ', 'ホルス', '1', '2026/06/01', false]],
-    mikei: [['7777790127', '2025/03/03', 'ｶﾞﾒﾝ ｻﾝ', 'ホルス', '-', '', true]],
+    '10': [['7777712343', '2020/01/01', 'ｶﾞﾒﾝ ｲﾁ', 'ホルス', '2', '2026/05/01'], ['7777756785', '2021/02/02', 'ｶﾞﾒﾝ ﾆ', 'ホルス', '1', '2026/06/01']],
+    '20': [['7777790127', '2025/03/03', 'ｶﾞﾒﾝ ｻﾝ', 'ホルス', '-', '']],
   };
-  if (u.pathname === '/SeisanPC/DLL60' && cookie(req, 'farm') === '00000005' && !u.searchParams.get('farm')) {
-    return send(`<nav id="menu"><a href="/SeisanPC/DLL60">農場状況</a></nav>
-      <div class="box"><p>経産牛</p><a href="/SeisanPC/DKL10?k=keisan&p=0">${SCREEN_COWS.keisan.length}</a></div>
-      <div class="box"><p>未経産牛</p><a href="/SeisanPC/DKL10?k=mikei&p=0">${SCREEN_COWS.mikei.length}</a></div>`);
+  SCREEN_COWS['01'] = [...SCREEN_COWS['10'], ...SCREEN_COWS['20']];
+  if (u.pathname === '/SeisanPC/DKL40') {
+    const a = (k) => `<a class="anchor" href="/SeisanPC/DNL02?KINDKBN=1&LISTKBN=${k}">${SCREEN_COWS[k].length}</a>`;
+    return send(`<div class="center-cont"><table><tr><td>集荷/経産牛</td></tr></table>
+      <ul><li><ul><li>全牛</li><li>${a('01')}</li></ul></li></ul>
+      <ul><li class="size04"><ul><li>経産牛</li><li>${a('10')}</li><li>(56)</li></ul></li></ul>
+      <ul><li class="size04"><ul><li>未経産牛</li><li>${a('20')}</li><li>(25)</li></ul></li></ul></div>`);
   }
-  if (u.pathname === '/SeisanPC/DKL10') {
-    const list = SCREEN_COWS[u.searchParams.get('k')], pg = +u.searchParams.get('p');
-    const per = 1, part = list.slice(pg * per, pg * per + per);
-    const tr = part.map((c) => `<tr>${c.slice(0, 6).map((v, i) => i === 0
-      ? `<td>${c[6] ? `<input type="hidden" value="${v}">` : ''}<span class="big">${v.slice(5, 9)}</span> ${v.slice(9)}</td>`
-      : `<td>${v}</td>`).join('')}</tr>`).join('');
-    const next = (pg + 1) * per < list.length ? `<a href="/SeisanPC/DKL10?k=${u.searchParams.get('k')}&p=${pg + 1}">次へ</a>` : '';
-    return send(`<table><thead><tr>${SCREEN_HEAD.map((h) => `<th>${h}</th>`).join('')}</tr></thead><tbody>${tr}</tbody></table>${next}`);
+  if (u.pathname === '/SeisanPC/DNL02') {
+    // 1回に1頭ずつ、下までスクロールすると続きが出る（本物は15頭ずつ）
+    const list = SCREEN_COWS[u.searchParams.get('LISTKBN')];
+    const leftOf = (c) => `<div class="st-cont"><table class="list-body"><tr><td class="mark-nyu id-dropdown w115"><input type="hidden" class="id-number" value="${c[0]}"><p><span>${c[0].slice(5, 9)}<small>${c[0].slice(9)}</small></span></p></td></tr></table></div>`;
+    const rightOf = (c) => `<div class="st-cont"><table class="list-body"><tr>${c.map((v) => `<td class="w125">${v}</td>`).join('')}</tr></table></div>`;
+    return send(`<p>${list.length} 頭</p><div class="xscroll-detail-dropmenu flex-row horizontal-scroll-table">
+      <div class="fixed-table"><table class="list-header fixed-header"><thead><tr><th><input class="CHKALLSELECT" type="checkbox"></th><th class="sort w115"><a>耳標ID</a></th></tr></thead></table>
+        <div class="list-body data-list block-detail" id="L">${leftOf(list[0])}</div></div>
+      <div class="scroll-table"><div class="fixed-header height-sync"><div class="scroll-sync-header"><table class="list-header"><thead><tr>${SCREEN_HEAD.map((h) => `<th class="sort">${h}</th>`).join('')}</tr></thead></table></div></div>
+        <div class="scroll-sync-body"><div class="list-body block-detail" id="R">${rightOf(list[0])}</div></div></div></div>
+      <div style="height:2500px"></div><div class="loading-box" style="display:none">読み込み中</div>
+      <script>
+        const L = ${JSON.stringify(list.slice(1).map(leftOf))}, R = ${JSON.stringify(list.slice(1).map(rightOf))};
+        window.addEventListener('scroll', () => {
+          if (L.length && !window.busy && window.scrollY + innerHeight >= document.body.scrollHeight - 50) {
+            window.busy = true; document.querySelector('.loading-box').style.display = 'block';
+            setTimeout(() => {
+              document.getElementById('L').insertAdjacentHTML('beforeend', L.shift());
+              document.getElementById('R').insertAdjacentHTML('beforeend', R.shift());
+              document.querySelector('.loading-box').style.display = 'none'; window.busy = false;
+            }, 1500);
+          }
+        });
+      </script>`);
   }
   if (u.pathname === '/SeisanPC/DLL60') {
     res.setHeader('set-cookie', 'farm=' + u.searchParams.get('farm') + '; path=/');
@@ -150,7 +168,7 @@ const server = http.createServer((req, res) => {
       <p>農場名：${u.searchParams.get('farm')}</p><div class="flex-row-space"><a class="arrow-link csv-output" href="DLL60/CsvOutput">表示中リストCSV出力</a></div>`);
   }
   if (u.pathname === '/SeisanPC/DNL00' && cookie(req, 'farm') === '00000005') {
-    return send('<h2>在籍牛一覧</h2><p>この農家の牛一覧は表示できません</p>');
+    return send('<div id="tnrAlert"><p class="msg">アクセス権がありません。</p><a class="btn-link" href="DLL60">ホーム画面に戻る</a></div>');
   }
   if (u.pathname === '/SeisanPC/DNL00') {
     // 絞り込みは前回の状態が残る。はじめは「未経産牛」だけ（拡張機能で見たときと同じ状態）

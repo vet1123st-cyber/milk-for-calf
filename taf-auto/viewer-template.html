@@ -262,7 +262,7 @@ function loadFiles(files){
       // TAF が付けるファイル名（1011_00007085_…）から生産者コードを取る。農家名は分からないのでコードで出す
       var m=x.f.name.match(/_(\d{8})_/);
       var code=m? m[1] : '';
-      var fi=farms.push({code:code,name:code? '生産者 '+code : x.f.name,date:new Date(x.f.lastModified).toISOString().slice(0,10),n:rows.length-1})-1;
+      var fi=farms.push({code:code,name:code? '生産者 '+code : x.f.name,date:(function(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); })(new Date(x.f.lastModified)),n:rows.length-1})-1;
       rows.slice(1).forEach(function(r){
         var o={_f:fi}; h.forEach(function(k,i){ o[k]=kana(r[i]); }); cows.push(o);
       });

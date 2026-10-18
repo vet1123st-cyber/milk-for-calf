@@ -65,6 +65,11 @@ function previousOf(dir) {
   return { byId, date: `${m[1]}-${m[2]}-${m[3]}` };
 }
 
+// 日本の日付（YYYY-MM-DD）。toISOString は世界標準時なので、朝9時前だと前の日になってしまう
+function localDate(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 // フォルダ名「00001234_十勝 太郎」から農家の名前とコードを取り出す
 function farmOf(dirName) {
   const m = dirName.match(/^(\d+)_?(.*)$/);
@@ -85,7 +90,7 @@ export function buildViewer(outRoot) {
     const h = rows[0].map((s) => s.trim());
     if (!header || h.length > header.length) header = h;
     const prev = previousOf(path.join(outRoot, d.name));
-    const farm = { ...farmOf(d.name), date: fs.statSync(f).mtime.toISOString().slice(0, 10), n: rows.length - 1, prev: prev ? prev.date : '' };
+    const farm = { ...farmOf(d.name), date: localDate(fs.statSync(f).mtime), n: rows.length - 1, prev: prev ? prev.date : '' };
     const fi = farms.push(farm) - 1;
     for (const r of rows.slice(1)) {
       const o = { _f: fi };
@@ -108,7 +113,9 @@ export function buildViewer(outRoot) {
   const html = tpl.replace('/*__DATA__*/null', json);
   const file = path.join(outRoot, '牛検索.html');
   fs.writeFileSync(file, html, 'utf8');
-  return { file, farms: farms.length, cows: cows.length };
+  // いちばん新しいCSVの取得日（共有の場所に置くときの名前に使う）
+  const newest = farms.reduce((a, f) => (f.date > a ? f.date : a), '');
+  return { file, farms: farms.length, cows: cows.length, date: newest };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

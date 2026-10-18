@@ -226,7 +226,7 @@ base = `http://127.0.0.1:${server.address().port}`;
 
 // 本番のスクリプトを、偽のサイトと試験用の設定に向けて動かす
 const cfgFile = path.join(OUT, 'config.json');
-fs.writeFileSync(cfgFile, JSON.stringify({ '保存先フォルダ': path.join(OUT, 'save'), '農家': '全部', '取らない農家': ['00000004'], 'ブラウザ': '' }));
+fs.writeFileSync(cfgFile, JSON.stringify({ '保存先フォルダ': path.join(OUT, 'save'), '農家': '全部', '取らない農家': ['00000004'], '共有先フォルダ': path.join(OUT, 'share'), '共有に残す数': 2, 'ブラウザ': '' }));
 Object.assign(process.env, {
   TAF_PORTAL_URL: base + '/Portal/',
   TAF_RAKUCHIKU_URL: base + '/SeisanPC/',
@@ -243,6 +243,11 @@ if (fs.existsSync('/opt/pw-browsers/chromium')) process.env.TAF_BROWSER_PATH ||=
 const farmADir = path.join(OUT, 'save', `${FARMS[0].code}_${FARMS[0].name.replace(/\s+/g, ' ')}`);
 fs.mkdirSync(farmADir, { recursive: true });
 fs.copyFileSync(path.join(HERE, 'fixtures', 'farmA_prev.csv'), path.join(farmADir, '牛一覧_20000101.csv'));
+
+// 共有の場所には前からの牛検索が3つある（2つ残す設定なので、いちばん古い2つが消えるはず）。関係ないファイルは消さない
+const share = path.join(OUT, 'share');
+fs.mkdirSync(share, { recursive: true });
+for (const n of ['牛検索改000101.html', '牛検索改000102.html', '牛検索改000103.html', 'カルテ.md']) fs.writeFileSync(path.join(share, n), 'x');
 
 const { run } = await import('../taf-download.mjs');
 const failed = await run();
@@ -261,6 +266,12 @@ r['全農家のフォルダができた'] = FARMS.filter((f) => f.csv).every((f)
 r['ポータルを通って入った'] = log.viaPortal === 2 && log.directHit === 0;
 const rowsOf = (f) => fs.readFileSync(path.join(save, `${f.code}_${f.name.replace(/\s+/g, ' ')}`, '牛一覧_最新.csv'), 'latin1').split('\r\n').filter(Boolean).length - 1;
 r['未経産だけに絞られていても全頭取れた'] = rowsOf(FARMS[0]) === 3 && rowsOf(FARMS[1]) === 1;
+{
+  const d = new Date(), ymd = String(d.getFullYear()).slice(2) + String(d.getMonth() + 1).padStart(2, '0') + String(d.getDate()).padStart(2, '0');
+  const names = fs.readdirSync(share).sort();
+  r['共有の場所に取得日つきで置いた'] = names.includes(`牛検索改${ymd}.html`);
+  r['共有の場所は新しい2つだけ残し、ほかのファイルは消さない'] = names.join('|') === ['カルテ.md', '牛検索改000103.html', `牛検索改${ymd}.html`].sort().join('|');
+}
 r['検索の画面ができた'] = fs.existsSync(path.join(save, '牛検索.html'));
 
 // 検索の画面を開いて、4桁で引いてみる

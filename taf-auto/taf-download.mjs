@@ -19,7 +19,7 @@ const PORTAL = process.env.TAF_PORTAL_URL || 'https://www.jatokachi.jp/Portal/';
 const RAKUCHIKU = process.env.TAF_RAKUCHIKU_URL || 'https://rakuchiku.jatokachi.jp/SeisanPC/';
 
 // 版。差し替えたつもりで古いファイルが残っていても、黒い画面の最初の行で見分けられるようにする
-const VERSION = '2026-10-18 版11（取得日つきの牛検索を共有の場所に置く）';
+const VERSION = '2026-10-18 版12（共有の牛検索はいつも同じ名前で上書き）';
 
 const WAIT = 30_000; // サイトが重い朝もあるので、1つの操作に30秒までは待つ
 
@@ -502,24 +502,20 @@ async function scrapeFromFarmStatus(page, farm, file) {
 
 // ---------- みんなが見る場所に置く ----------
 
-// 出来上がった牛検索を、取った日付つきの名前（牛検索改261018.html）で共有の場所にも置く。
-// 共有の場所は config.json の「共有先フォルダ」。書いていなければ保存先フォルダの1つ上（OneDrive の会社フォルダ）。
-// 毎週増えていくので、新しいものから「共有に残す数」（ふだん4つ）だけ残し、それより古い 牛検索改○○○○○○.html は消す。
-function shareViewer(cfg, outRoot, file, csvDate) {
+// 出来上がった牛検索を、みんなが見る場所に「いつも同じ名前」で上書きして置く。
+// 名前が変わらないので、ブラウザのブックマークやリンクを貼り直さなくてよい。
+// 置き場所は config.json の「共有先フォルダ」（書いていなければ保存先フォルダの1つ上＝OneDrive の会社フォルダ）、
+// 名前は「共有ファイル名」（書いていなければ 牛検索.html）。
+function shareViewer(cfg, outRoot, file) {
   try {
     const dest = cfg['共有先フォルダ'] || path.dirname(outRoot);
-    // 名前の日付は「CSVを取った日」。作り直しただけの日ではない
-    const yymmdd = csvDate ? csvDate.replace(/-/g, '').slice(2) : today().slice(2);
-    const name = `牛検索改${yymmdd}.html`;
-    fs.copyFileSync(file, path.join(dest, name));
-    log(`みんなが見る場所に置きました: ${path.join(dest, name)}`);
-
-    const keep = Number.isInteger(cfg['共有に残す数']) ? cfg['共有に残す数'] : 4;
-    const old = fs.readdirSync(dest).filter((n) => /^牛検索改\d{6}\.html$/.test(n)).sort().reverse().slice(Math.max(keep, 1));
-    for (const n of old) {
-      fs.unlinkSync(path.join(dest, n));
-      log(`  古い牛検索を片付けました: ${n}`);
-    }
+    const name = cfg['共有ファイル名'] || '牛検索.html';
+    const target = path.join(dest, name);
+    if (path.resolve(target) === path.resolve(file)) return; // 保存先と同じ場所なら、もう置いてある
+    // 置き換え（別名から差し替え）だと OneDrive が「消して新しく作った」と見て共有リンクが変わることがあるので、
+    // 同じファイルの中身をそのまま書き換える
+    fs.copyFileSync(file, target);
+    log(`みんなが見る場所を新しくしました: ${target}`);
   } catch (e) {
     // 共有の場所に置けなくても、保存先の牛検索.html はできているので止めない
     log(`  ⚠ みんなが見る場所に置けませんでした: ${e.message}`);
@@ -538,7 +534,7 @@ export async function run() {
     logFile = path.join(HERE, 'logs', `${today()}.log`);
     const r = buildViewer(outRoot);
     log(`検索の画面を作りました: ${r.file}（${r.farms} 戸・${r.cows} 頭）`);
-    shareViewer(cfg, outRoot, r.file, r.date);
+    shareViewer(cfg, outRoot, r.file);
     return [];
   }
 
@@ -612,7 +608,7 @@ export async function run() {
   try {
     const r = buildViewer(outRoot);
     log(`検索の画面を作りました: ${r.file}（${r.farms} 戸・${r.cows} 頭）`);
-    shareViewer(cfg, outRoot, r.file, r.date);
+    shareViewer(cfg, outRoot, r.file);
   } catch (e) {
     log(`✗ 検索の画面を作れませんでした: ${e.message}`);
     failed.push('検索の画面');

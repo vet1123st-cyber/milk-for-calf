@@ -19,7 +19,7 @@ const PORTAL = process.env.TAF_PORTAL_URL || 'https://www.jatokachi.jp/Portal/';
 const RAKUCHIKU = process.env.TAF_RAKUCHIKU_URL || 'https://rakuchiku.jatokachi.jp/SeisanPC/';
 
 // 版。差し替えたつもりで古いファイルが残っていても、黒い画面の最初の行で見分けられるようにする
-const VERSION = '2026-10-18 版12（共有の牛検索はいつも同じ名前で上書き）';
+const VERSION = '2026-10-25 版13（毎週日曜に取得・PCが切れていたら次の起動時）';
 
 const WAIT = 30_000; // サイトが重い朝もあるので、1つの操作に30秒までは待つ
 

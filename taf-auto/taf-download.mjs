@@ -19,7 +19,7 @@ const PORTAL = process.env.TAF_PORTAL_URL || 'https://www.jatokachi.jp/Portal/';
 const RAKUCHIKU = process.env.TAF_RAKUCHIKU_URL || 'https://rakuchiku.jatokachi.jp/SeisanPC/';
 
 // 版。差し替えたつもりで古いファイルが残っていても、黒い画面の最初の行で見分けられるようにする
-const VERSION = '2026-10-25 版13（毎週日曜に取得・PCが切れていたら次の起動時）';
+const VERSION = '2026-10-25 版14（農家本人のIDで入れる・報告の画面には入らない）';
 
 const WAIT = 30_000; // サイトが重い朝もあるので、1つの操作に30秒までは待つ
 
@@ -29,6 +29,11 @@ const WAIT = 30_000; // サイトが重い朝もあるので、1つの操作に3
 //   TAF_NAME_1=清水町   TAF_USER_1=farmers\…   TAF_PASS_1=…
 //   TAF_NAME_2=新得町   TAF_USER_2=farmers\…   TAF_PASS_2=…
 // 番号なしの TAF_USER / TAF_PASS も1つ目として使える（前の書き方）。
+//
+// 農家本人の ID も並べられる。そのときは TAF_FARM_n に生産者コードを書く:
+//   TAF_NAME_3=農家A   TAF_USER_3=farmers\…   TAF_PASS_3=…   TAF_FARM_3=12345678
+// 本人の ID は農家を選ぶ画面を通らず、その農家だけを取る。会社（JA）の ID の巡回では
+// その農家を飛ばす（同じ農家を2回取らない）。2026-10-25 に1戸で使い始めた。
 function readAccounts() {
   const f = process.env.TAF_ENV || path.join(HERE, '.env');
   const env = {};
@@ -38,13 +43,18 @@ function readAccounts() {
       if (m) env[m[1]] = m[2].replace(/^"(.*)"$/, '$1');
     }
   }
-  Object.keys(process.env).filter((k) => /^TAF_(USER|PASS|NAME)(_\d+)?$/.test(k)).forEach((k) => { env[k] = process.env[k]; });
+  Object.keys(process.env).filter((k) => /^TAF_(USER|PASS|NAME|FARM)(_\d+)?$/.test(k)).forEach((k) => { env[k] = process.env[k]; });
 
   const accounts = [];
-  if (env.TAF_USER || env.TAF_PASS) accounts.push({ name: env.TAF_NAME || '', user: env.TAF_USER, pass: env.TAF_PASS });
-  const nums = [...new Set(Object.keys(env).map((k) => (k.match(/^TAF_(?:USER|PASS|NAME)_(\d+)$/) || [])[1]).filter(Boolean))]
+  if (env.TAF_USER || env.TAF_PASS) accounts.push({ name: env.TAF_NAME || '', user: env.TAF_USER, pass: env.TAF_PASS, farm: env.TAF_FARM });
+  const nums = [...new Set(Object.keys(env).map((k) => (k.match(/^TAF_(?:USER|PASS|NAME|FARM)_(\d+)$/) || [])[1]).filter(Boolean))]
     .sort((x, y) => x - y);
-  for (const n of nums) accounts.push({ name: env[`TAF_NAME_${n}`] || `アカウント${n}`, user: env[`TAF_USER_${n}`], pass: env[`TAF_PASS_${n}`] });
+  for (const n of nums) {
+    accounts.push({ name: env[`TAF_NAME_${n}`] || `アカウント${n}`, user: env[`TAF_USER_${n}`], pass: env[`TAF_PASS_${n}`],
+      farm: env[`TAF_FARM_${n}`] });
+  }
+  // 生産者コードは8桁の数字。全角で打っても通るように半角にそろえる
+  for (const a of accounts) a.farm = (a.farm || '').normalize('NFKC').trim() || null;
 
   // メモ帳で日本語入力のまま打つと「farmers￥…」のように全角や円記号になることがある。
   // TAF には半角の「\」で送らないと通らないので、ID は半角にそろえて円記号を「\」に直す。
@@ -58,6 +68,9 @@ function readAccounts() {
   for (const a of usable) {
     if (!a.user || !a.pass || /ここに/.test(a.user + a.pass)) {
       throw new Error(`.env の「${a.name || 'アカウント'}」の ID かパスワードが書けていません。`);
+    }
+    if (a.farm && !/^\d{8}$/.test(a.farm)) {
+      throw new Error(`.env の「${a.name || 'アカウント'}」の TAF_FARM（生産者コード）は8桁の数字で書いてください（いま: ${a.farm}）。`);
     }
   }
   return usable;
@@ -180,6 +193,36 @@ async function openRakuchiku(context, page, cred) {
   await p2.waitForLoadState('domcontentloaded');
   if (!p2.url().startsWith(RAKUCHIKU)) throw new Error(`酪畜履歴が開けませんでした（開いた画面: ${p2.url()}）`);
   return p2;
+}
+
+// 農家本人の ID で入ると、農家を選ぶ画面（DZL99）は出ず、いきなりその農家のホーム（DLL60）が開く。
+// 画面の上には「JA名：ＪＡ○○　農場名：○○ ○○　ユーザー名：…」と出る（2026-10-25 に本物で確かめた）。
+// 保存のフォルダは、前からあれば（会社の ID で取っていたときのもの）それをそのまま使う。
+// フォルダの名前が変わると、この一覧を読んでいるほかの仕組み（農場のデータ基盤の台帳など）が見失うため。
+async function ownFarm(page, acc, outRoot) {
+  if (/DZL99/i.test(page.url()) || (await page.locator('input[name=radioSelect]').count())) {
+    throw new Error('本人の ID のはずが、農家を選ぶ画面が出ました。TAF_FARM を書いたアカウントが会社（JA）の ID になっていないか確かめてください。');
+  }
+  const text = await page.locator('body').innerText({ timeout: WAIT }).catch(() => '');
+  const m = text.match(/農場名\s*[:：]\s*(.+?)\s*(?:ユーザー名|\n|$)/);
+  const shown = m ? m[1].trim() : '';
+  const prefix = acc.farm + '_';
+  const have = fs.existsSync(outRoot)
+    ? fs.readdirSync(outRoot).find((n) => n.startsWith(prefix) && fs.statSync(path.join(outRoot, n)).isDirectory())
+    : null;
+  const name = have ? have.slice(prefix.length) : shown;
+  if (!name) throw new Error('農場名が画面から読めませんでした（画面の作りが変わったかもしれません）。');
+  return { '生産者コード': acc.farm, '名前': name, '画面の農場名': shown };
+}
+
+// 「報告」の中の画面（発情報告・授精報告・売廃報告・死亡報告…。URL が /SeisanPC/DJL…）は、
+// TAF へ書き込むための画面。自動取得では読み込みさえさせない。
+// 押す場所を間違えても、画面の作りが変わっても、ここで止まる。
+async function blockReportScreens(context) {
+  await context.route(/\/SeisanPC\/DJL\d+/i, (route) => {
+    log(`  ⚠ 報告の画面（${route.request().url()}）を開きかけたので止めました`);
+    return route.abort();
+  });
 }
 
 // 「ユーザー切替」と同じ。農家を選ぶ画面（DZL99）に戻る。
@@ -552,26 +595,51 @@ export async function run() {
   const browser = await chromium.launch(opts);
 
   const failed = [];
+  // 農家本人の ID で取る農家。会社（JA）の ID の巡回では取りに行かない（同じ農家を2回取らない）
+  const ownFarms = new Set(accounts.filter((a) => a.farm).map((a) => a.farm));
+  // --only=農家A のように名前を渡すと、そのアカウントだけ回す。
+  // TAF が途中で止まって一部だけ取りこぼした日に、全部を回し直さずに済むように（2026-10-25 に入れた）
+  const only = (process.argv.find((a) => a.startsWith('--only=')) || '').slice('--only='.length);
+  const run1 = only ? accounts.filter((a) => a.name === only) : accounts;
+  if (only && !run1.length) throw new Error(`--only=${only} の名前のアカウントが .env にありません（TAF_NAME_n の名前で指定してください）。`);
+  if (only) log(`${only} のアカウントだけ回します`);
   try {
-    for (const acc of accounts) {
+    for (const acc of run1) {
       // アカウントごとにまっさらな窓で入る（前のアカウントのサインインが残らないように）
       const title = acc.name || acc.user;
       log(`=== ${title} ===`);
       // どのIDで入ろうとしたかを残す（パスワードは文字数だけ。中身は書かない）
       log(`ID: ${acc.user}（パスワード ${acc.pass.length} 文字）`);
       const context = await browser.newContext({ acceptDownloads: true, locale: 'ja-JP' });
+      await blockReportScreens(context);
       let page = await context.newPage();
       try {
         page = await openRakuchiku(context, page, acc);
+        if (acc.farm) {
+          // 農家本人の ID：農家を選ばずに、その農家の牛一覧だけを取る
+          const farm = await ownFarm(page, acc, outRoot);
+          const label = `${farm['生産者コード']} ${farm['名前']}`.trim();
+          log(`${label}（本人の ID・画面の農場名「${farm['画面の農場名']}」）`);
+          try {
+            await downloadCowList(page, farm, outRoot);
+          } catch (e) {
+            log(`  ✗ ${e.message}`);
+            await keepEvidence(page, label);
+            failed.push(label);
+          }
+          continue;
+        }
         const listed = await listFarms(page);
         // 「全部」ならこのアカウントで見える農家ぜんぶ。並べてあるときは、このアカウントで見えるものだけ
         const skip = new Set((cfg['取らない農家'] || []).map((c) => String(c).trim()));
         const farms = (cfg['農家'] === '全部'
           ? listed
           : cfg['農家'].filter((f) => listed.some((x) => x['生産者コード'] === f['生産者コード'])))
-          .filter((f) => !skip.has(f['生産者コード']));
+          .filter((f) => !skip.has(f['生産者コード']) && !ownFarms.has(f['生産者コード']));
         const skipped = listed.filter((f) => skip.has(f['生産者コード']));
         if (skipped.length) log(`取らない農家: ${skipped.map((f) => `${f['生産者コード']} ${f['名前']}`).join('、')}`);
+        const byOwn = listed.filter((f) => ownFarms.has(f['生産者コード']));
+        if (byOwn.length) log(`本人の ID で取る農家（ここでは取らない）: ${byOwn.map((f) => `${f['生産者コード']} ${f['名前']}`).join('、')}`);
         // 一覧を全部読めなかったら、最後に「取りこぼし」として知らせる（ぜんぶ取れた、とは言わない）
         if (listed.short) {
           log(`  ⚠ 農家の一覧を全部読めませんでした（${listed.short}）。読めた分だけ取ります`);

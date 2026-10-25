@@ -25,13 +25,17 @@ const FARMS = [
   { code: '00000004', name: '権限　なし', csv: null },
   // 牛一覧からCSVを出せないが、農場状況の「経産牛」「未経産牛」の数字から一覧が見られる農家
   { code: '00000005', name: '画面　だけ', csv: null, screen: true },
+  // 農家本人の ID でも入れる農家。会社の ID の一覧にも出てくる
+  { code: '00000006', name: '本人　六郎', csv: 'farmF.csv', own: true },
 ];
 // JA ごとにアカウントが違い、見える農家も違う（清水町と新得町のように）
 const ACCOUNTS = [
-  { name: '清水町', user: 'farmers\\shimizu', pass: 'secret1', farms: ['00000001', '00000003', '00000004', '00000005'] },
+  { name: '清水町', user: 'farmers\\shimizu', pass: 'secret1', farms: ['00000001', '00000003', '00000004', '00000005', '00000006'] },
   { name: '新得町', user: 'farmers\\shintoku', pass: 'secret2', farms: ['00000002'] },
+  // 農家本人の ID。入るといきなりその農家のホーム（DLL60）が開き、農家を選ぶ画面は無い（本物で確かめた）
+  { name: '本人', user: 'farmers\\honnin', pass: 'secret3', farms: ['00000006'], own: '00000006' },
 ];
-const log = { signIns: 0, viaPortal: 0, directHit: 0 };
+const log = { signIns: 0, viaPortal: 0, directHit: 0, reportHits: 0, csvBy: {} };
 const ALL = ['経産牛', '未経産牛', '搾乳牛', '乾乳牛', '素牛', '肥育牛', '初生', '預かっている牛', '預けている牛'];
 let base = '';
 
@@ -73,8 +77,14 @@ const server = http.createServer((req, res) => {
   }
   if (u.pathname === '/Portal/Redirector.aspx') {
     log.viaPortal++;
-    res.writeHead(302, { 'set-cookie': 'rk=1; path=/', location: '/SeisanPC/DZL99' });
+    // 本人の ID は農家を選ぶ画面を通らず、その農家のホームが開く
+    res.writeHead(302, { 'set-cookie': 'rk=1; path=/', location: acc.own ? '/SeisanPC/DLL60?farm=' + acc.own : '/SeisanPC/DZL99' });
     return res.end();
+  }
+  // 「報告」の画面（TAF へ書き込む画面）。自動取得は一度も読み込んではいけない
+  if (u.pathname.startsWith('/SeisanPC/DJL')) {
+    log.reportHits++;
+    return send('<h2>授精・移植報告</h2>');
   }
   // 酪畜履歴はポータルを通っていないと入れない
   if (u.pathname.startsWith('/SeisanPC/') && cookie(req, 'rk') !== '1') {
@@ -163,9 +173,15 @@ const server = http.createServer((req, res) => {
       </script>`);
   }
   if (u.pathname === '/SeisanPC/DLL60') {
-    res.setHeader('set-cookie', 'farm=' + u.searchParams.get('farm') + '; path=/');
-    return send(`<nav id="menu"><ul class="dropdown"><li><a href="/SeisanPC/DLL60">農場状況</a></li><li><a href="/SeisanPC/DNL00"><svg width="10" height="10"></svg><span>牛一覧</span></a></li></ul></nav>
-      <p>農場名：${u.searchParams.get('farm')}</p><div class="flex-row-space"><a class="arrow-link csv-output" href="DLL60/CsvOutput">表示中リストCSV出力</a></div>`);
+    const code = u.searchParams.get('farm') || cookie(req, 'farm');
+    const f = FARMS.find((x) => x.code === code);
+    res.setHeader('set-cookie', 'farm=' + code + '; path=/');
+    // 本物と同じく、上の帯に JA名・農場名・ユーザー名が並ぶ。メニューには「報告」の画面への入口もある。
+    // 本人の ID のホームは、開いただけで報告の画面を裏で読み込もうとする（止められるかを確かめるため）
+    const probe = acc.own ? '<img src="/SeisanPC/DJL02" width="1" height="1">' : '';
+    return send(`<header>JA名：ＪＡ試験　農場名：${f ? f.name : code}　ユーザー名：${acc.name}さん</header>
+      <nav id="menu"><ul class="dropdown"><li><a href="/SeisanPC/DLL60">農場状況</a></li><li><a href="/SeisanPC/DJL07">授精・移植報告</a></li><li><a href="/SeisanPC/DNL00"><svg width="10" height="10"></svg><span>牛一覧</span></a></li></ul></nav>
+      ${probe}<div class="flex-row-space"><a class="arrow-link csv-output" href="DLL60/CsvOutput">表示中リストCSV出力</a></div>`);
   }
   if (u.pathname === '/SeisanPC/DNL00' && cookie(req, 'farm') === '00000005') {
     return send('<div id="tnrAlert"><p class="msg">アクセス権がありません。</p><a class="btn-link" href="DLL60">ホーム画面に戻る</a></div>');
@@ -206,6 +222,7 @@ const server = http.createServer((req, res) => {
   if (u.pathname === '/SeisanPC/DNL00/CsvOutput') {
     if (req.method !== 'POST') { res.writeHead(405); return res.end(); }
     const f = FARMS.find((x) => x.code === cookie(req, 'farm'));
+    (log.csvBy[f.code] ||= []).push(acc.name);   // どのアカウントで何回取ったか
     const flt = decodeURIComponent(cookie(req, 'flt') || '未経産牛').split(',');
     let buf = fs.readFileSync(path.join(HERE, 'fixtures', f.csv));
     if (flt.includes('MORE')) {
@@ -236,6 +253,9 @@ Object.assign(process.env, {
   TAF_NAME_2: ACCOUNTS[1].name, TAF_PASS_2: ACCOUNTS[1].pass,
   // 日本語入力のまま打った全角の円記号でも通ること
   TAF_USER_2: ACCOUNTS[1].user.replace('\\', '￥'),
+  // 農家本人の ID。生産者コードを全角で打っても通ること
+  TAF_NAME_3: ACCOUNTS[2].name, TAF_USER_3: ACCOUNTS[2].user, TAF_PASS_3: ACCOUNTS[2].pass,
+  TAF_FARM_3: '０００００００６',
 });
 if (fs.existsSync('/opt/pw-browsers/chromium')) process.env.TAF_BROWSER_PATH ||= '/opt/pw-browsers/chromium';
 
@@ -243,6 +263,10 @@ if (fs.existsSync('/opt/pw-browsers/chromium')) process.env.TAF_BROWSER_PATH ||=
 const farmADir = path.join(OUT, 'save', `${FARMS[0].code}_${FARMS[0].name.replace(/\s+/g, ' ')}`);
 fs.mkdirSync(farmADir, { recursive: true });
 fs.copyFileSync(path.join(HERE, 'fixtures', 'farmA_prev.csv'), path.join(farmADir, '牛一覧_20000101.csv'));
+// 本人の ID で取る農家は、会社の ID で取っていたころのフォルダがもうある（名前が画面と少し違う）。
+// ほかの仕組みがこのフォルダを読んでいるので、新しいフォルダを作らずにここへ置くこと
+const ownDir = path.join(OUT, 'save', '00000006_前の名前');
+fs.mkdirSync(ownDir, { recursive: true });
 
 // 共有の場所には前回の牛検索と、関係ないファイルがある（牛検索は上書き、ほかは触らない）
 const share = path.join(OUT, 'share');
@@ -255,15 +279,19 @@ const failed = await run();
 const save = path.join(OUT, 'save');
 const r = {};
 r['取れなかったものがない'] = failed.length === 0;
-r['アカウントごとにサインインは1回ずつ'] = log.signIns === 2;
+r['アカウントごとにサインインは1回ずつ'] = log.signIns === 3;
+r['本人のIDで、農家を選ばずに取れた'] = fs.existsSync(path.join(ownDir, '牛一覧_最新.csv'));
+r['本人の農家は前からあるフォルダに置く（新しいフォルダを作らない）'] = fs.readdirSync(save).filter((n) => n.startsWith('00000006_')).join('|') === '00000006_前の名前';
+r['同じ農家を2回取らない（会社のIDの巡回では飛ばす）'] = (log.csvBy['00000006'] || []).join('|') === '本人';
+r['報告の画面（TAFへ書き込む画面）は一度も読み込まない'] = log.reportHits === 0;
 r['スクロールしないと出ない農家・ホームが違う農家も取れた'] = fs.existsSync(path.join(save, '00000003_試験 三郎', '牛一覧_最新.csv'));
 const scr = path.join(save, '00000005_画面 だけ', '牛一覧_最新.csv');
 const scrText = fs.existsSync(scr) ? fs.readFileSync(scr, 'utf8') : '';
 r['CSVを出せない農家は画面から全頭読んだ'] = scrText.charCodeAt(0) === 0xfeff && scrText.trim().split('\r\n').length === 4;
 r['画面の10桁が隠れていれば10桁で保存'] = scrText.includes('7777712343') && scrText.includes('7777790127');
 r['取らない農家は取りに行かない'] = !fs.readdirSync(save).some((n) => n.startsWith('00000004'));
-r['全農家のフォルダができた'] = FARMS.filter((f) => f.csv).every((f) => fs.existsSync(path.join(save, `${f.code}_${f.name.replace(/\s+/g, ' ')}`, '牛一覧_最新.csv')));
-r['ポータルを通って入った'] = log.viaPortal === 2 && log.directHit === 0;
+r['全農家のフォルダができた'] = FARMS.filter((f) => f.csv && !f.own).every((f) => fs.existsSync(path.join(save, `${f.code}_${f.name.replace(/\s+/g, ' ')}`, '牛一覧_最新.csv')));
+r['ポータルを通って入った'] = log.viaPortal === 3 && log.directHit === 0;
 const rowsOf = (f) => fs.readFileSync(path.join(save, `${f.code}_${f.name.replace(/\s+/g, ' ')}`, '牛一覧_最新.csv'), 'latin1').split('\r\n').filter(Boolean).length - 1;
 r['未経産だけに絞られていても全頭取れた'] = rowsOf(FARMS[0]) === 3 && rowsOf(FARMS[1]) === 1;
 r['共有の牛検索は同じ名前のまま中身が新しくなる'] = fs.readFileSync(path.join(share, '牛検索.html'), 'utf8').includes('牛検索（TAF');
